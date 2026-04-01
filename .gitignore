@@ -1,0 +1,16 @@
+# 忽略数据文件
+*.pkl
+*.csv
+*.npy
+
+# 忽略 Optuna 数据库和日志
+*.db
+*.log
+
+# 忽略 Python 缓存
+__pycache__/
+*.pyc
+
+# 忽略虚拟环境（如果你在目录下建了 venv）
+venv/
+.conda/
