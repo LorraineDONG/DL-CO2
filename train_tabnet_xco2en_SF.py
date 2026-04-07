@@ -11,8 +11,8 @@ from sklearn.preprocessing import StandardScaler
 # ==========================================
 # 0. 全局配置与日志初始化
 # ==========================================
-LOG_FILE = 'tabnet_training.log'
-DB_FILE = 'sqlite:///optuna_tabnet_study.db'
+LOG_FILE = '/home/whdong/dl/logfile/tabnet_training.log'
+DB_FILE = 'sqlite:////home/whdong/dl/dbfile/optuna_tabnet_study.db'
 
 if os.path.exists(LOG_FILE): os.remove(LOG_FILE)
 
@@ -109,7 +109,7 @@ def optimize_tabnet(X_train, y_train, X_val, y_val, n_trials=50):
 # 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/gridded_oco_sif_no2_era5_ndvi_meic_ntl.pkl'
+    file_path = '/home/whdong/dl/gridded0.25_xco2sf_sif_no2_era5_ndvi_meic_ntl.pkl'
     target = 'xco2_enhanced'
     
     golden_features = [
@@ -179,8 +179,29 @@ if __name__ == "__main__":
     
     y_pred = final_model.predict(X_test)
     
+    # --- 指标计算 (四维体系) ---
+    test_r2 = r2_score(y_test, y_pred)
+    test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+    test_mae = mean_absolute_error(y_test, y_pred)
+    test_bias = np.mean(y_pred - y_test)
+
+    # --- 提取 TabNet 特征重要性 ---
+    # TabNet 内部通过 Attention Mask 提取重要性，且默认已归一化（总和为 1.0）
+    importance_df = pd.DataFrame({
+        'Feature': golden_features,
+        'Importance (Normalized)': final_model.feature_importances_
+    }).sort_values(by='Importance (Normalized)', ascending=False)
+    
+    # 输出报告
     logger.info("="*30 + " TABNET FINAL REPORT " + "="*30)
-    logger.info(f"Test R²  : {r2_score(y_test, y_pred):.4f}")
-    logger.info(f"Test RMSE: {np.sqrt(mean_squared_error(y_test, y_pred)):.4f}")
-    logger.info(f"Test MAE : {mean_absolute_error(y_test, y_pred):.4f}")
+    logger.info(f"Test R²   : {test_r2:.4f}")
+    logger.info(f"Test RMSE : {test_rmse:.4f} ppm")
+    logger.info(f"Test MAE  : {test_mae:.4f} ppm")
+    logger.info(f"Test BIAS : {test_bias:.4f} ppm")
+    logger.info("-" * 25 + " 气象与卫星因子贡献度排名前 10 " + "-" * 25)
+    
+    for idx, row in importance_df.head(10).iterrows():
+        logger.info(f"  {row['Feature']:>20} : {row['Importance (Normalized)']:.4f}")
+        
     logger.info("="*81)
+
