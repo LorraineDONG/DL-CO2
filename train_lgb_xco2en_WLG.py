@@ -7,6 +7,7 @@ import os
 import json
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.feature_selection import RFECV
 
 # ==========================================
 # 0. 全局配置与路径初始化
@@ -114,6 +115,72 @@ def recursive_feature_elimination(X_train, y_train, X_val, y_val, candidate_feat
     logger.info(f"🏆 筛选完成！最佳候选特征数量: {len(best_subset)}")
     return must_keep + best_subset
 
+
+def recursive_feature_elimination_tscv(X_pool, y_pool, candidate_features, must_keep, n_splits=3):
+    logger.info(f"🕵️‍♂️ 启动带时间滑窗的特征淘汰赛 (CV={n_splits})...")
+    current_candidates = list(candidate_features)
+    best_r2 = -np.inf
+    best_subset = current_candidates.copy()
+
+    # 初始化时间序列滑窗
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+
+    # 只要候选特征还多于18个，就继续淘汰 (可根据你的实际情况调整阈值)
+    while len(current_candidates) > 18:
+        features_to_test = must_keep + current_candidates
+        X_curr = X_pool[features_to_test]
+        
+        cv_r2s = []
+        # 初始化一个全零数组，用于累加每一折的特征重要性 (Gain)
+        total_importances = np.zeros(len(features_to_test))
+        
+        # 🌟 对当前特征组合进行 TimeSeriesSplit 多折验证
+        for train_index, val_index in tscv.split(X_curr):
+            X_tr, X_va = X_curr.iloc[train_index], X_curr.iloc[val_index]
+            y_tr, y_va = y_pool.iloc[train_index], y_pool.iloc[val_index]
+            
+            model = lgb.LGBMRegressor(
+                n_estimators=2000,  
+                learning_rate=0.03,  
+                random_state=42, 
+                n_jobs=-1, 
+                verbose=-1
+            )
+            
+            model.fit(
+                X_tr, y_tr, 
+                eval_set=[(X_va, y_va)],
+                callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
+            )
+            
+            preds = model.predict(X_va)
+            cv_r2s.append(r2_score(y_va, preds))
+            
+            # 累加这一折的特征重要性
+            total_importances += model.booster_.feature_importance(importance_type='gain')
+            
+        # 计算多折的平均指标
+        avg_r2 = np.mean(cv_r2s)
+        avg_importances = total_importances / n_splits
+        
+        # 记录跨年份平均效果最好的那一次候选特征组合
+        if avg_r2 > best_r2:
+            best_r2 = avg_r2
+            best_subset = current_candidates.copy()
+            
+        # ⚠️ 分离出只属于 candidate_features 的重要性 
+        candidate_importances = avg_importances[len(must_keep):]
+        
+        # 依据平均重要性，剔除候选特征中最弱的一个
+        worst_idx = np.argmin(candidate_importances)
+        worst_feat = current_candidates.pop(worst_idx)
+        
+        logger.info(f"剩余候选特征数: {len(current_candidates)} | CV 平均 R²: {avg_r2:.4f} | 剔除: {worst_feat}")
+
+    logger.info(f"🏆 筛选完成！最佳 CV R²: {best_r2:.4f} | 最佳候选特征数量: {len(best_subset)}")
+    return must_keep + best_subset
+
+
 # ==========================================
 # 3. Optuna + TimeSeriesSplit 深度调参
 # ==========================================
@@ -177,14 +244,15 @@ if __name__ == "__main__":
             'era5_blh', 'era5_t2m', 
             'era5_u100', 'era5_v100', 
             'sif_740', 'no2_trop',    
-            'meic_nox'                
+            'meic_nox', 'grid_lat', 'grid_lon'                
     ]
 
     # 🌟 2. 参与“淘汰赛”的候选特征
     candidate_features = [
         'era5_wind_dir_100m', 'era5_wind_speed_100m', 
-        'ntl', 'ndvi', 'ndvi_std', 
-        'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
+        'ntl', 'ndvi', 'ndvi_std', 'year',
+        # 'month_sin', 'month_cos', 
+        'doy_sin', 'doy_cos',
         'sif_sza', 'sif_variance', 'sif_vza',
         'no2_vza', 'no2_sza', 'no2_amf_trop', 'no2_variance', 
         'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross'
@@ -198,13 +266,18 @@ if __name__ == "__main__":
     test_df        = df[df['year'] >= 2022]
 
     # 2. 受限特征淘汰赛
-    rfe_train = train_val_pool[train_val_pool['year'] <= 2020]
-    rfe_val   = train_val_pool[train_val_pool['year'] == 2021]
-    
-    golden_features = recursive_feature_elimination(
-        rfe_train, rfe_train[target], rfe_val, rfe_val[target], candidate_features, must_keep_features
+    # rfe_train = train_val_pool[train_val_pool['year'] <= 2020]
+    # rfe_val   = train_val_pool[train_val_pool['year'] == 2021]
+    # golden_features = recursive_feature_elimination(
+    #     rfe_train, rfe_train[target], rfe_val, rfe_val[target], candidate_features, must_keep_features
+    # )  # 注释的这4行是之前recursive_feature_elimination的版本
+
+    X_train_val = train_val_pool[must_keep_features + candidate_features]
+    y_train_val = train_val_pool[target]
+    golden_features = recursive_feature_elimination_tscv(
+        X_train_val, y_train_val, candidate_features, must_keep_features, n_splits=3
     )
-    
+
     logger.info(f"✨ 最终确定的输入特征组合 ({len(golden_features)}个): {golden_features}")
 
     X_pool, y_pool = train_val_pool[golden_features], train_val_pool[target]
@@ -222,7 +295,7 @@ if __name__ == "__main__":
     logger.info("🏁 执行盲测集评估与特征物理重要性分析...")
     
     initial_lr = best_params.pop('learning_rate')
-    final_model = lgb.LGBMRegressor(**best_params, n_estimators=10000, objective='huber') # n_estimators 修改最终盲测模型的训练轮次
+    final_model = lgb.LGBMRegressor(**best_params, n_estimators=1000, objective='regression') # n_estimators 修改最终盲测模型的训练轮次
     
     # ⚠️ 动态学习率衰减
     lr_scheduler = lgb.reset_parameter(

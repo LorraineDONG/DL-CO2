@@ -5,21 +5,25 @@ import optuna
 import logging
 import os
 import json
+import joblib
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
 
 # ==========================================
 # 0. 全局配置与路径初始化
 # ==========================================
-# 修正了文件名，防止和 Random Forest 的日志混淆冲突
 LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SF_lgb_training.log'
 DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SF_optuna_lgb_study.db' 
-PARAMS_JSON = '/home/whdong/dl/train_lgb_xco2en_SF_best_params.json'
+PARAMS_JSON = '/home/whdong/dl/best_params/train_lgb_xco2en_SF_best_params.json'
+MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SF-lgb_model.pkl'    
+SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SF-lgb_scaler.pkl'  
 
-# 自动创建不存在的文件夹，防止 SQLite 或日志报错
+
+# 自动创建不存在的文件夹，防止 SQLite、日志或模型保存报错
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.makedirs(os.path.dirname(DB_FILE.replace('sqlite:///', '')), exist_ok=True)
 os.makedirs(os.path.dirname(PARAMS_JSON), exist_ok=True)
+os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)          # 新增：统一创建 models 文件夹
 
 if os.path.exists(LOG_FILE): os.remove(LOG_FILE)
 
@@ -168,24 +172,23 @@ def optimize_hyperparameters(X_pool, y_pool, n_trials=100):
 # 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/gridded0.25_xco2sf_sif_no2_era5_ndvi_meic_ntl.pkl'
+    file_path = '/home/whdong/dl/TABLE-WLGXCO2en_sif_no2_era5_ndvi_meic_ntl_dem.pkl'
     target = 'xco2_enhanced'
     
     # 🌟 1. 物理上绝对不能踢掉的核心特征（强制保留）
     must_keep_features = [
-         'era5_tcwv', 'era5_ssrd', 'era5_blh', 'era5_t2m', 
-        'era5_u100', 'era5_v100', # 风场动力
-        'sif_740', 'no2_trop',    # 碳氮源汇
-        'meic_nox'                # 基础背景
+        'era5_u100', 'era5_v100', 
+        'sif_740', 'no2_trop',  
+        'meic_nox', 'dem_mean'              
     ]
 
     # 🌟 2. 参与“淘汰赛”的候选特征
     candidate_features = [
-        'era5_wind_dir_100m', 'era5_wind_speed_100m', 
-        'ntl', 'ndvi', 'ndvi_std', 'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
-        'sif_sza', 'sif_uncertainty', 'sif_vza', 'sif_raz', 
-        'no2_vaa', 'no2_vza', 'no2_sza', 'no2_amf_trop', 'no2_trop_std', 
-         'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross'
+        'era5_tcwv', 'era5_ssrd', 'era5_blh', 'era5_t2m', 
+        'ntl', 'ndvi', 'ndvi_std', 
+        'month_sin', 'month_cos', 
+        'sif_variance', 'no2_amf_trop', 'no2_variance', 
+        'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross'
     ]
 
     # 1. 准备数据
@@ -270,3 +273,5 @@ if __name__ == "__main__":
         logger.info(f"  {row['Feature']:>20} : {row['Importance (Normalized Gain)']:.4f}")
         
     logger.info("="*85)
+
+    joblib.dump(final_model, MODEL_SAVE_PATH)

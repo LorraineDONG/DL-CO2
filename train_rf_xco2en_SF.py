@@ -9,15 +9,17 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold
 
 # ==========================================
 # 0. 全局配置与路径初始化
 # ==========================================
-LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SF_rf_training.log'
-DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SF_optuna_rf_study.db' 
-PARAMS_JSON = '/home/whdong/dl/train_rf_xco2en_SF_best_params.json'
-MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SF-rf_model.pkl' # 模型保存路径
-SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SF-rf_scaler.pkl'    # 必须同时保存标准化器
+LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SHP_rf_training.log'
+DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SHP_optuna_rf_study.db' 
+PARAMS_JSON = '/home/whdong/dl/best_params/train_rf_xco2en_SHP_best_params.json'
+MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-rf_model.pkl' # 模型保存路径
+SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-rf_scaler.pkl'    # 必须同时保存标准化器
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.makedirs(os.path.dirname(DB_FILE.replace('sqlite:///', '')), exist_ok=True)
@@ -60,32 +62,35 @@ def load_and_preprocess(file_path):
     df_clean['ndvi_t2m_cross'] = df_clean['ndvi'] * df_clean['era5_t2m']
     df_clean['ssrd_t2m_cross'] = df_clean['era5_ssrd'] * df_clean['era5_t2m']
     df_clean['ntl_nox_cross'] = df_clean['ntl'] * df_clean['meic_nox']
+
+    df_clean['era5_wind_speed'] = np.sqrt(df_clean['era5_u100']**2 + df_clean['era5_v100']**2)
     
     return df_clean
 
 # ==========================================
 # 2. Optuna + TimeSeriesSplit 深度超参数优化
 # ==========================================
-def optimize_rf(X_pool, y_pool, n_trials=50):
+def optimize_rf(X_pool, y_pool, n_trials=100):
     def objective(trial):
         param = {
-            'n_estimators': trial.suggest_int('n_estimators', 200, 1000, step=100),
-            'max_depth': trial.suggest_int('max_depth', 20, 80),
-            'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
-            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 20),
-            'max_features': trial.suggest_float('max_features', 0.5, 1.0),
-            # 新增：控制 Bootstrap 采样率，防止过拟合
-            'max_samples': trial.suggest_float('max_samples', 0.5, 0.95),
+            'n_estimators': trial.suggest_int('n_estimators', 100, 300, step=50), # n_estimators=森林中决策树的数量，理论上越多越好，但增加到一定程度后准确率会遇到瓶颈，且会显著增加计算耗时。对于你这种复杂的地球科学数据集，500-1000 树通常是兼顾效率和精度的平衡点。
+            'max_depth': trial.suggest_int('max_depth', 10, 30), # max_depth=树的最大深度，如果太深，模型会试图解释每一个异常的观测值，导致过拟合；如果太浅模型无法捕捉复杂非线性关系
+            'min_samples_split': trial.suggest_int('min_samples_split', 5, 60), # min_samples_split，一个节点至少要包含多少个样本，才允许被进一步拆分。数值越大，树的生长越保守。
+            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 4, 60), # min_samples_leaf=一个叶子节点（最末端）至少要包含的样本数。在处理像卫星反演这种含有观测噪声的数据时，适当增大此值，可以过滤掉噪声，使模型更稳健。
+            'max_features': trial.suggest_float('max_features', 0.2, 0.6), # max_features=每棵树在拆分节点时，随机选取的特征比例。
+            'max_samples': trial.suggest_float('max_samples', 0.3, 0.7), # max_samples=每棵树从训练集中随机抽取的样本比例。如果数据量非常大，减小此值可以加快训练速度并提升泛化能力。
             'random_state': 42,
             'n_jobs': -1,
             'bootstrap': True 
         }
         
-        tscv = TimeSeriesSplit(n_splits=3)
+        # tscv = TimeSeriesSplit(n_splits=3)
+        kf = KFold(n_splits=3, shuffle=True, random_state=42)
         cv_rmses = []
         
         # 使用滑窗交叉验证
-        for train_index, val_index in tscv.split(X_pool):
+        # 使用 kf.split 替换 tscv.split
+        for train_index, val_index in kf.split(X_pool):
             X_tr_raw, X_va_raw = X_pool.iloc[train_index].values, X_pool.iloc[val_index].values
             y_tr, y_va = y_pool.iloc[train_index].values, y_pool.iloc[val_index].values
             
@@ -98,6 +103,7 @@ def optimize_rf(X_pool, y_pool, n_trials=50):
             model.fit(X_tr, y_tr)
             
             preds = model.predict(X_va)
+
             cv_rmses.append(np.sqrt(mean_squared_error(y_va, preds)))
             
         return np.mean(cv_rmses)
@@ -111,81 +117,124 @@ def optimize_rf(X_pool, y_pool, n_trials=50):
 # 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/gridded0.25_xco2sf_sif_no2_era5_ndvi_meic_ntl.pkl'
+    file_path = '/home/whdong/dl/TABLE-WLGXCO2en_sif_no2_era5_ndvi_meic_ntl_dem.pkl'
     target = 'xco2_enhanced'
     
-    # 加入新的周期性特征
+    # 🌟 完善后的特征列表：包含空间坐标、物理交叉项与风速
     golden_features = [
-        'era5_wind_dir_100m', 'era5_wind_speed_100m', 'era5_tcwv', 'era5_ssrd', 'era5_blh', 
-        'era5_v100', 'era5_u100', 'era5_t2m', 'ndvi', 'ndvi_std', 'sif_time_tai93', 'sif_sza', 
-        'sif_uncertainty', 'sif_vza', 'sif_raz', 'no2_trop', 'no2_vaa', 'no2_vza', 'no2_sza', 
-        'no2_amf_trop', 'no2_trop_std', 'no2_time', 'mean_hour', 'month', 'season', 
-        'month_sin', 'month_cos', 'doy_sin', 'doy_cos', 
+        'era5_u100', 'era5_v100', 'grid_lon', 'grid_lat',
+        'sif_740', 'no2_trop', 'meic_nox', 'dem_mean',
+        'era5_tcwv', 'era5_ssrd', 'era5_blh', 'era5_t2m', 
+        'ntl', 'ndvi', 'ndvi_std', 
+        'month_sin', 'month_cos', 
+        'sif_variance', 'era5_wind_speed',
+        # 'sif_sza', 'no2_sza', 
+        'no2_amf_trop', 'no2_variance', 
         'ssrd_t2m_cross', 'ntl_nox_cross', 'ndvi_t2m_cross'
     ]
 
     # 1. 准备数据
     df = load_and_preprocess(file_path)
     
-    train_val_pool = df[df['year'] <= 2021]
-    test_df        = df[df['year'] >= 2022]
+    # 划分训练/验证池 (2021及以前) 和 终极盲测集 (2022及以后)
+    # train_val_pool = df[df['year'] <= 2021]
+    # test_df        = df[df['year'] >= 2022]
 
-    X_pool = train_val_pool[golden_features]
-    y_pool = train_val_pool[target]
-    X_test_raw = test_df[golden_features].values
-    y_test = test_df[target].values
+    # X_pool = train_val_pool[golden_features]
+    # y_pool = train_val_pool[target] 
+    # X_test_raw = test_df[golden_features].values
+    # y_test = test_df[target].values
 
-    # 2. 执行全自动参数优化
-    best_params = optimize_rf(X_pool, y_pool, n_trials=50)
+    X = df[golden_features]
+    y = df[target]
+    X_pool, X_test_raw, y_pool, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42)
 
-    # 保存参数
+    # 2. 执行全自动参数优化 (Optuna)
+    # 起步阶段建议 n_trials 设为 30-50 以保证速度
+    best_params = optimize_rf(X_pool, y_pool, n_trials=100)
+    
+    # 💡 调参结束后，强制将最终模型的树数量设定为 1000 以获得最佳泛化性能
+    max_trees = 1000
+    best_params['n_estimators'] = max_trees
+    
+    # 保存最优参数
     with open(PARAMS_JSON, 'w', encoding='utf-8') as f:
         json.dump(best_params, f, indent=4)
     logger.info(f"✅ RF 最优参数已安全保存至: {PARAMS_JSON}")
 
-    # 3. 终极盲测阶段
-    logger.info("🏁 执行 Random Forest 盲测集评估与特征重要性分析...")
-    logger.info(f"✅ 模型已保存至: {MODEL_SAVE_PATH}")
-    logger.info(f"✅ 标准化器已保存至: {SCALER_SAVE_PATH}")
+    # 3. 终极盲测阶段与阶段性监控
+    logger.info("🏁 进入终极评估阶段：执行热启动训练监控 (warm_start=True)...")
 
     # ⚠️ 最终训练前，对全体历史数据进行统一标准化
     final_scaler = StandardScaler()
     X_pool_scaled = final_scaler.fit_transform(X_pool.values)
     X_test_scaled = final_scaler.transform(X_test_raw)
     
-    final_model = RandomForestRegressor(**best_params, n_jobs=-1, random_state=42,criterion='absolute_error')
-    final_model.fit(X_pool_scaled, y_pool.values)
+    # 🌟 初始化具有“热启动”能力的模型
+    # 剥离 n_estimators，因为我们将通过循环手动增加它
+    rf_config = best_params.copy()
+    rf_config.pop('n_estimators', None)
     
+    final_model = RandomForestRegressor(
+        **rf_config, 
+        n_estimators=0,      # 从 0 开始
+        warm_start=True,     # 开启热启动，允许在原有树的基础上继续生长
+        n_jobs=-1, 
+        random_state=42, 
+        criterion='squared_error'
+    )
+
+    # 🌟 循环训练：每 50 棵树打印一次 Train/Test R2 进度
+    step = 50
+    logger.info(f"{'Trees':>6} | {'Train R2':>10} | {'Test R2':>10} | 状态")
+    logger.info("-" * 50)
+
+    for current_trees in range(step, max_trees + 1, step):
+        final_model.n_estimators = current_trees
+        final_model.fit(X_pool_scaled, y_pool.values)
+        
+        # 实时计算当前轮次的表现
+        cur_pred_train = final_model.predict(X_pool_scaled)
+        cur_pred_test  = final_model.predict(X_test_scaled)
+        
+        cur_train_r2 = r2_score(y_pool.values, cur_pred_train)
+        cur_test_r2  = r2_score(y_test, cur_pred_test)
+        
+        logger.info(f"{current_trees:>6} | {cur_train_r2:>10.4f} | {cur_test_r2:>10.4f} | 训练中...")
+
+    # 4. 最终指标汇总
     y_pred = final_model.predict(X_test_scaled)
-    
-    # --- 指标计算 (四维体系) ---
+    y_pred_train_final = final_model.predict(X_pool_scaled)
+
+    train_r2_final = r2_score(y_pool.values, y_pred_train_final)
     test_r2 = r2_score(y_test, y_pred)
     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     test_mae = mean_absolute_error(y_test, y_pred)
     test_bias = np.mean(y_pred - y_test)
 
     # --- 提取特征重要性 ---
-    # Random Forest 使用的是基尼不纯度 (Gini Impurity) 减少量来计算特征重要性
     importance_df = pd.DataFrame({
         'Feature': golden_features,
         'Importance (Gini)': final_model.feature_importances_
     }).sort_values(by='Importance (Gini)', ascending=False)
     
-    # 输出报告
+    # 输出最终评估报告
     logger.info("="*30 + " RANDOM FOREST FINAL REPORT " + "="*30)
+    logger.info(f"Train R²  : {train_r2_final:.4f}")
     logger.info(f"Test R²   : {test_r2:.4f}")
     logger.info(f"Test RMSE : {test_rmse:.4f} ppm")
     logger.info(f"Test MAE  : {test_mae:.4f} ppm")
     logger.info(f"Test BIAS : {test_bias:.4f} ppm")
-    logger.info("-" * 25 + " 气象与卫星因子贡献度排名前 10 " + "-" * 25)
+    logger.info("-" * 25 + " 气象与卫星因子贡献度排名前 15 " + "-" * 25)
     
-    for idx, row in importance_df.head(10).iterrows():
-        logger.info(f"  {row['Feature']:>20} : {row['Importance (Gini)']:.4f}")
+    for idx, row in importance_df.head(15).iterrows():
+        logger.info(f"  {row['Feature']:>22} : {row['Importance (Gini)']:.4f}")
         
     logger.info("="*88)
 
-    # 保存模型实体
+    # 5. 保存模型与标准化器
     os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
     joblib.dump(final_model, MODEL_SAVE_PATH)
-    # 保存标准化器（预测新数据时必须使用和训练时一模一样的均值和方差）
     joblib.dump(final_scaler, SCALER_SAVE_PATH)
+    logger.info(f"✅ 模型与标准化器已持久化至: {os.path.dirname(MODEL_SAVE_PATH)}")
