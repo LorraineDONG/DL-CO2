@@ -75,7 +75,7 @@ def load_and_preprocess(file_path):
     return df_clean
 
 # ==========================================
-# 2. Optuna + KFold 深度超参数优化 (注入 RF CV 哲学)
+# 2. Optuna + KFold 深度超参数优化
 # ==========================================
 def optimize_tabnet(X_pool, y_pool, n_trials=50):
     def objective(trial):
