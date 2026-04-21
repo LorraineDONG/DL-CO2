@@ -75,14 +75,14 @@ def load_and_preprocess(file_path):
     return df_clean
 
 # ==========================================
-# 2. Optuna + KFold 深度超参数优化
+# 2. Optuna + KFold 深度超参数优化 (注入 RF CV 哲学)
 # ==========================================
 def optimize_tabnet(X_pool, y_pool, n_trials=50):
     def objective(trial):
         # TabNet 专属超参数空间
         n_da = trial.suggest_int('n_da', 8, 64, step=8)
         n_steps = trial.suggest_int('n_steps', 3, 8)
-        lambda_sparse = trial.suggest_float('lambda_sparse', 1e-6, 1e-3, log=True)
+        lambda_sparse = trial.suggest_float('lambda_sparse', 1e-6, 1e-2, log=True)
         gamma = trial.suggest_float('gamma', 1.0, 2.0)
         lr = trial.suggest_float('lr', 1e-3, 5e-2, log=True)
         weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
@@ -139,7 +139,7 @@ def optimize_tabnet(X_pool, y_pool, n_trials=50):
 # 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/TABLE-SHPXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co.pkl'
+    file_path = '/home/whdong/dl/TABLE-WLGXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co.pkl'
     target = 'xco2_enhanced'
     
     # 🌟 直接使用与 RF/LGB 完全一致的特征集合
@@ -170,9 +170,8 @@ if __name__ == "__main__":
 #     'era5_wind_dir_10m', 'era5_wind_dir_10m_lag1', 'era5_wind_dir_10m_lag2', 'era5_wind_dir_10m_lag3', 'era5_wind_dir_10m_lead1', 'era5_wind_dir_10m_lead2', 'era5_wind_dir_10m_lead3', 
 #     'era5_wind_speed_100m', 'era5_wind_speed_100m_lag1', 'era5_wind_speed_100m_lag2', 'era5_wind_speed_100m_lag3', 'era5_wind_speed_100m_lead1', 'era5_wind_speed_100m_lead2', 'era5_wind_speed_100m_lead3', 
 #     'era5_wind_speed_10m', 'era5_wind_speed_10m_lag1', 'era5_wind_speed_10m_lag2', 'era5_wind_speed_10m_lag3', 'era5_wind_speed_10m_lead1', 'era5_wind_speed_10m_lead2', 'era5_wind_speed_10m_lead3', 
-#     'grid_lat', 'grid_lon', 'meic_nox', 'ndvi', 'ndvi_std', 
-#     'no2_amf_trop', 'no2_trop', 'no2_variance', 'ntl', 
-#     'sif_740', 'sif_point_count', 'sif_variance'
+#     'grid_lat', 'grid_lon', 'meic_nox', 'ndvi', 'ndvi_std', 'no2_amf_trop', 'no2_trop', 'no2_variance', 'ntl', 
+#     'sif_740', 'sif_variance'
 # ]
 
 
