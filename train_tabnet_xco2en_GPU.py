@@ -65,13 +65,16 @@ def load_and_preprocess(file_path):
     df_clean['doy_cos'] = np.cos(2 * np.pi * df_clean['doy'] / 365.25)
     df_clean['season'] = (df_clean['month'] % 12 + 3) // 3
     
-    # --- 物理交叉特征与风速计算 (严格与RF/LGB对齐) ---
-    logger.info("🛠️ 执行特征工程: 周期性编码 + 物理交叉项 + 风速计算...")
+    # --- 交叉特征计算 ---
     df_clean['ndvi_t2m_cross'] = df_clean['ndvi'] * df_clean['era5_t2m']
     df_clean['ssrd_t2m_cross'] = df_clean['era5_ssrd'] * df_clean['era5_t2m']
     df_clean['ntl_nox_cross'] = df_clean['ntl'] * df_clean['meic_nox']
-    df_clean['era5_wind_speed'] = np.sqrt(df_clean['era5_u100']**2 + df_clean['era5_v100']**2)
     
+    df_clean['no2_trop_log'] = np.log1p(np.maximum(df_clean['no2_trop'], 0))
+    df_clean['no2_co_cross'] = df_clean['no2_trop'] / (df_clean['co'] + 1e-8)
+    
+    df_clean = df_clean.astype({col: 'float32' for col in df_clean.select_dtypes(include='float64').columns})
+
     return df_clean
 
 # ==========================================
@@ -84,10 +87,10 @@ def optimize_tabnet(X_pool, y_pool, n_trials=50):
         n_steps = trial.suggest_int('n_steps', 3, 8)
         lambda_sparse = trial.suggest_float('lambda_sparse', 1e-6, 1e-2, log=True)
         gamma = trial.suggest_float('gamma', 1.0, 2.0)
-        lr = trial.suggest_float('lr', 1e-3, 5e-2, log=True)
+        lr = trial.suggest_float('lr', 1e-3, 1e-1, log=True)
         weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
         
-        kf = KFold(n_splits=3, shuffle=True, random_state=42)
+        kf = KFold(n_splits=10, shuffle=True, random_state=42)
         cv_rmses = []
         
         # 使用滑窗交叉验证与 RF/LGB 对齐
@@ -119,7 +122,7 @@ def optimize_tabnet(X_pool, y_pool, n_trials=50):
                 eval_name=['valid'], eval_metric=['rmse'],
                 loss_fn=torch.nn.SmoothL1Loss(),
                 max_epochs=100, patience=8,         
-                batch_size=2048, virtual_batch_size=256
+                batch_size=16384, virtual_batch_size=2048
             )
             
             # 使用预测结果反标准化，以真实量纲评估 RMSE
@@ -143,36 +146,23 @@ if __name__ == "__main__":
     target = 'xco2_enhanced'
     
     # 🌟 直接使用与 RF/LGB 完全一致的特征集合
-    golden_features = [
-        'era5_u100', 'era5_v100', 'grid_lon', 'grid_lat',
-        'sif_740', 'no2_trop', 'meic_nox', 'dem_mean',
-        'era5_tcwv', 'era5_ssrd', 'era5_blh', 'era5_t2m', 
-        'ntl', 'ndvi', 'ndvi_std', 
-        'month_sin', 'month_cos', 
-        'sif_variance', 'era5_wind_speed',
-        'no2_amf_trop', 'no2_variance', 
-        'ssrd_t2m_cross', 'ntl_nox_cross', 'ndvi_t2m_cross'
-    ]
+    # golden_features = [
+    #     'era5_u100', 'era5_v100', 'grid_lon', 'grid_lat',
+    #     'sif_740', 'no2_trop', 'meic_nox', 'dem_mean',
+    #     'era5_tcwv', 'era5_ssrd', 'era5_blh', 'era5_t2m', 
+    #     'ntl', 'ndvi', 'ndvi_std', 
+    #     'month_sin', 'month_cos', 
+    #     'sif_variance', 'era5_wind_speed',
+    #     'no2_amf_trop', 'no2_variance', 
+    #     'ssrd_t2m_cross', 'ntl_nox_cross', 'ndvi_t2m_cross'
+    # ]
 
-#     golden_features = [
-#     'co', 'co_variance', 'dem_mean', 'dem_std', 
-#     'era5_blh', 'era5_blh_lag1', 'era5_blh_lag2', 'era5_blh_lag3', 'era5_blh_lead1', 'era5_blh_lead2', 'era5_blh_lead3', 
-#     'era5_d2m', 'era5_d2m_lag1', 'era5_d2m_lag2', 'era5_d2m_lag3', 'era5_d2m_lead1', 'era5_d2m_lead2', 'era5_d2m_lead3', 
-#     'era5_sp', 'era5_sp_lag1', 'era5_sp_lag2', 'era5_sp_lag3', 'era5_sp_lead1', 'era5_sp_lead2', 'era5_sp_lead3', 
-#     'era5_ssrd', 'era5_ssrd_lag1', 'era5_ssrd_lag2', 'era5_ssrd_lag3', 'era5_ssrd_lead1', 'era5_ssrd_lead2', 'era5_ssrd_lead3', 
-#     'era5_t2m', 'era5_t2m_lag1', 'era5_t2m_lag2', 'era5_t2m_lag3', 'era5_t2m_lead1', 'era5_t2m_lead2', 'era5_t2m_lead3', 
-#     'era5_tcwv', 'era5_tcwv_lag1', 'era5_tcwv_lag2', 'era5_tcwv_lag3', 'era5_tcwv_lead1', 'era5_tcwv_lead2', 'era5_tcwv_lead3', 
-#     'era5_u100', 'era5_u100_lag1', 'era5_u100_lag2', 'era5_u100_lag3', 'era5_u100_lead1', 'era5_u100_lead2', 'era5_u100_lead3', 
-#     'era5_u10', 'era5_u10_lag1', 'era5_u10_lag2', 'era5_u10_lag3', 'era5_u10_lead1', 'era5_u10_lead2', 'era5_u10_lead3', 
-#     'era5_v100', 'era5_v100_lag1', 'era5_v100_lag2', 'era5_v100_lag3', 'era5_v100_lead1', 'era5_v100_lead2', 'era5_v100_lead3', 
-#     'era5_v10', 'era5_v10_lag1', 'era5_v10_lag2', 'era5_v10_lag3', 'era5_v10_lead1', 'era5_v10_lead2', 'era5_v10_lead3', 
-#     'era5_wind_dir_100m', 'era5_wind_dir_100m_lag1', 'era5_wind_dir_100m_lag2', 'era5_wind_dir_100m_lag3', 'era5_wind_dir_100m_lead1', 'era5_wind_dir_100m_lead2', 'era5_wind_dir_100m_lead3', 
-#     'era5_wind_dir_10m', 'era5_wind_dir_10m_lag1', 'era5_wind_dir_10m_lag2', 'era5_wind_dir_10m_lag3', 'era5_wind_dir_10m_lead1', 'era5_wind_dir_10m_lead2', 'era5_wind_dir_10m_lead3', 
-#     'era5_wind_speed_100m', 'era5_wind_speed_100m_lag1', 'era5_wind_speed_100m_lag2', 'era5_wind_speed_100m_lag3', 'era5_wind_speed_100m_lead1', 'era5_wind_speed_100m_lead2', 'era5_wind_speed_100m_lead3', 
-#     'era5_wind_speed_10m', 'era5_wind_speed_10m_lag1', 'era5_wind_speed_10m_lag2', 'era5_wind_speed_10m_lag3', 'era5_wind_speed_10m_lead1', 'era5_wind_speed_10m_lead2', 'era5_wind_speed_10m_lead3', 
-#     'grid_lat', 'grid_lon', 'meic_nox', 'ndvi', 'ndvi_std', 'no2_amf_trop', 'no2_trop', 'no2_variance', 'ntl', 
-#     'sif_740', 'sif_variance'
-# ]
+    golden_features = ['grid_lon', 'grid_lat',
+                       'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 
+                       'era5_tcwv', 'era5_u100', 'era5_v100', 'ndvi_t2m_cross', 
+                       'no2_trop_log', 'no2_co_cross', 'ntl', 'no2_amf_trop', 
+                       'no2_variance', 'doy_sin', 'doy_cos', 'month_sin', 
+                       'dem_mean', 'sif_740', 'sif_variance']
 
 
     # 1. 准备数据
