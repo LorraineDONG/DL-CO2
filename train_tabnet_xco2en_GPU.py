@@ -142,7 +142,7 @@ def optimize_tabnet(X_pool, y_pool, n_trials=50):
 # 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/TABLE-WLGXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co.pkl'
+    file_path = '/home/whdong/dl/TABLE-SHPXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co.pkl'
     target = 'xco2_enhanced'
     
     # 🌟 直接使用与 RF/LGB 完全一致的特征集合

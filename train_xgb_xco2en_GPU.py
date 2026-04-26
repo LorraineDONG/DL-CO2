@@ -9,7 +9,7 @@ import xgboost as xgb
 import shap
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
 
 # ==========================================
 # 0. 全局配置与路径初始化
@@ -41,7 +41,7 @@ def load_and_preprocess(file_path):
     logger.info(f"📂 正在加载数据: {file_path}...")
     df = pd.read_pickle(file_path)
     df_clean = df.dropna().copy()
-    
+
     # 交叉验证时打乱顺序，时间排序不再是必须的，但保留特征工程
     df_clean['date'] = pd.to_datetime(df_clean['date'])
     df_clean['month'] = df_clean['date'].dt.month
@@ -60,7 +60,6 @@ def load_and_preprocess(file_path):
     
     # NO2 专属特征工程
     df_clean['no2_trop_log'] = np.log1p(np.maximum(df_clean['no2_trop'], 0))
-    df_clean['no2_co_cross'] = df_clean['no2_trop'] / (df_clean['co'] + 1e-8)
 
     return df_clean
 
@@ -72,7 +71,8 @@ def perform_shap_feature_selection(X_train, y_train, feature_names, top_n=20):
     
     baseline_model = xgb.XGBRegressor(
         n_estimators=300, learning_rate=0.05, max_depth=6, 
-        n_jobs=-1, random_state=42, tree_method='hist'
+        n_jobs=-1, random_state=42, tree_method='hist',
+        device='cuda'
     )
     baseline_model.fit(X_train, y_train)
     
@@ -115,17 +115,22 @@ def optimize_xgb(X_pool, y_pool, n_trials=50):
             'reg_alpha': trial.suggest_float('reg_alpha', 1e-4, 10.0, log=True),
             'reg_lambda': trial.suggest_float('reg_lambda', 1e-4, 10.0, log=True),
             'tree_method': 'hist',
+            'device': 'cuda',
             'random_state': 42,
             'n_jobs': -1
         }
-        
+
         # 寻优阶段用 3-Fold 即可，节省时间
-        kf = KFold(n_splits=10, shuffle=True, random_state=42)
+        kf = KFold(n_splits=3, shuffle=True, random_state=42)
         cv_rmses = []
         
         for train_index, val_index in kf.split(X_pool):
-            X_tr, X_va = X_pool[train_index], X_pool[val_index]
+            X_tr_raw, X_va_raw = X_pool[train_index], X_pool[val_index]
             y_tr, y_va = y_pool.iloc[train_index].values, y_pool.iloc[val_index].values
+
+            scaler = StandardScaler()
+            X_tr = scaler.fit_transform(X_tr_raw)
+            X_va = scaler.transform(X_va_raw)
             
             model = xgb.XGBRegressor(**param)
             model.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], early_stopping_rounds=30, verbose=False)
@@ -136,7 +141,12 @@ def optimize_xgb(X_pool, y_pool, n_trials=50):
         return np.mean(cv_rmses)
 
     logger.info("🚀 阶段二：开始 XGBoost Optuna 深度参数搜索...")
-    study = optuna.create_study(direction='minimize', storage=DB_FILE, load_if_exists=True)
+    study = optuna.create_study(
+        direction='minimize', 
+        storage=DB_FILE, 
+        load_if_exists=True,
+        study_name='xco2en_gpu_xgboost' 
+    )
     study.optimize(objective, n_trials=n_trials) 
     return study.best_params
 
@@ -144,7 +154,7 @@ def optimize_xgb(X_pool, y_pool, n_trials=50):
 # 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/TABLE-SNCXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co_lt0CHN.pkl'
+    file_path = '/home/whdong/dl/xco2_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
     target = 'xco2_enhanced'
     
     initial_features = [
@@ -159,21 +169,27 @@ if __name__ == "__main__":
     
     # 1. 准备全局数据 (不再切分测试集/训练集)
     df = load_and_preprocess(file_path)
-    
-    # 全局标准化
-    scaler = StandardScaler()
-    X_all_scaled = scaler.fit_transform(df[initial_features])
+
+    X_all_raw = df[initial_features].values
     y_all = df[target]
     
-    # 2. 执行 SHAP 特征筛选 (在全局数据上执行一次，找出全局最佳特征集)
+    # 2. 执行 SHAP 特征筛选 
+    temp_scaler = StandardScaler()
+    X_all_scaled_for_shap = temp_scaler.fit_transform(X_all_raw)
+
     selected_feature_names = perform_shap_feature_selection(
-        X_all_scaled, y_all, initial_features, top_n=20
+        X_all_scaled_for_shap, y_all, initial_features, top_n=20
     )
     selected_indices = [initial_features.index(f) for f in selected_feature_names]
-    X_all_selected = X_all_scaled[:, selected_indices]
+    
+    # 获取精简后的未缩放原始数据，进入严格流程
+    X_all_selected_raw = X_all_raw[:, selected_indices]
 
-    # 3. 执行参数寻优
-    best_params = optimize_xgb(X_all_selected, y_all, n_trials=50)
+    # 3. 执行参数寻优 (传入未缩放的数据，函数内部有缩放)
+    best_params = optimize_xgb(X_all_selected_raw, y_all, n_trials=50)
+    best_params['tree_method'] = 'hist'
+    best_params['device'] = 'cuda'
+    
     with open(PARAMS_JSON, 'w', encoding='utf-8') as f:
         json.dump(best_params, f, indent=4)
     logger.info(f"✅ XGB 最优参数已保存至: {PARAMS_JSON}")
@@ -184,22 +200,27 @@ if __name__ == "__main__":
     logger.info("🏁 阶段三：执行严谨的 10-Fold 交叉验证评估...")
     
     kf_10 = KFold(n_splits=10, shuffle=True, random_state=42)
-    oof_predictions = np.zeros(len(y_all))  # 用于存放 Out-of-Fold 预测结果
+    oof_predictions = np.zeros(len(y_all)) 
     fold_rmses = []
     fold_r2s = []
     
-    for fold, (train_idx, test_idx) in enumerate(kf_10.split(X_all_selected)):
-        X_fold_train, y_fold_train = X_all_selected[train_idx], y_all.iloc[train_idx]
-        X_fold_test, y_fold_test = X_all_selected[test_idx], y_all.iloc[test_idx]
+    for fold, (train_idx, test_idx) in enumerate(kf_10.split(X_all_selected_raw)):
+        # 获取原始折数据
+        X_fold_train_raw, y_fold_train = X_all_selected_raw[train_idx], y_all.iloc[train_idx]
+        X_fold_test_raw, y_fold_test = X_all_selected_raw[test_idx], y_all.iloc[test_idx]
         
-        # --- 嵌套验证机制 ---
-        # 为了使用 Early Stopping 且不发生测试集数据泄露，
-        # 我们从当前的训练折中再切分出 10% 作为内部验证集
-        inner_eval_idx = int(len(X_fold_train) * 0.9)
-        X_inner_tr, X_inner_val = X_fold_train[:inner_eval_idx], X_fold_train[inner_eval_idx:]
-        y_inner_tr, y_inner_val = y_fold_train.iloc[:inner_eval_idx], y_fold_train.iloc[inner_eval_idx:]
+        # 【修复4】：使用 train_test_split 避免时序切片偏差
+        X_inner_tr_raw, X_inner_val_raw, y_inner_tr, y_inner_val = train_test_split(
+            X_fold_train_raw, y_fold_train, test_size=0.1, random_state=42
+        )
         
-        fold_model = xgb.XGBRegressor(**best_params, tree_method='hist', n_jobs=-1, random_state=42)
+        # 【核心修复】：在当前折闭环内进行严格标准化
+        fold_scaler = StandardScaler()
+        X_inner_tr = fold_scaler.fit_transform(X_inner_tr_raw)
+        X_inner_val = fold_scaler.transform(X_inner_val_raw)
+        X_fold_test = fold_scaler.transform(X_fold_test_raw)
+        
+        fold_model = xgb.XGBRegressor(**best_params,n_jobs=-1, random_state=42)
         
         # 训练：监控内部验证集
         fold_model.fit(
@@ -239,13 +260,16 @@ if __name__ == "__main__":
     # ==========================================
     logger.info("💾 阶段四：使用 100% 数据训练最终生产模型并固化...")
     
-    # 生产模型通常不再使用 early stopping，而是直接使用 CV 找到的参数和足够的树数量
-    # 或者用所有数据的 5% 作为极小的验证集防止过拟合
-    final_eval_idx = int(len(X_all_selected) * 0.95)
-    X_final_tr, X_final_val = X_all_selected[:final_eval_idx], X_all_selected[final_eval_idx:]
-    y_final_tr, y_final_val = y_all.iloc[:final_eval_idx], y_all.iloc[final_eval_idx:]
+    # 【修复5】：为最终模型创建并保存一个拟合了 100% 数据的 Scaler
+    final_scaler = StandardScaler()
+    X_all_selected_scaled = final_scaler.fit_transform(X_all_selected_raw)
     
-    production_model = xgb.XGBRegressor(**best_params, tree_method='hist', n_jobs=-1, random_state=42)
+    # 使用 train_test_split
+    X_final_tr, X_final_val, y_final_tr, y_final_val = train_test_split(
+        X_all_selected_scaled, y_all, test_size=0.05, random_state=42
+    )
+    
+    production_model = xgb.XGBRegressor(**best_params, n_jobs=-1, random_state=42)
     production_model.fit(
         X_final_tr, y_final_tr,
         eval_set=[(X_final_val, y_final_val)],
@@ -256,5 +280,6 @@ if __name__ == "__main__":
     # 保存模型与标准化器
     os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
     joblib.dump({'model': production_model, 'feature_indices': selected_indices}, MODEL_SAVE_PATH)
-    joblib.dump(scaler, SCALER_SAVE_PATH)
+    # 确保保存的是最终的 scaler 供后续预测部署使用
+    joblib.dump(final_scaler, SCALER_SAVE_PATH)
     logger.info(f"✅ 生产级模型与特征索引已持久化至: {MODEL_SAVE_PATH}")

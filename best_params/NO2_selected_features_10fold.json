@@ -1,0 +1,17 @@
+[
+    "grid_lon",
+    "grid_lat",
+    "meic_nox",
+    "dem_mean",
+    "doy_cos",
+    "era5_tcwv",
+    "ntl",
+    "era5_blh",
+    "era5_v100",
+    "era5_ssrd",
+    "era5_t2m",
+    "era5_u100",
+    "month_cos",
+    "doy_sin",
+    "month_sin"
+]
