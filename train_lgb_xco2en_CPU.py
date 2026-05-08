@@ -113,7 +113,7 @@ def optimize_hyperparameters(X_pool, y_pool, n_trials=100):
 # 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/TABLE-WLGXCO2en_sif_no2_era5_ndvi_meic_ntl_dem.pkl'
+    file_path = '/home/whdong/dl/data/TABLE-SHPXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
     target = 'xco2_enhanced'
     
     # 🌟 直接使用与 RF 完全一致的特征集合
@@ -138,7 +138,7 @@ if __name__ == "__main__":
     )
     logger.info(f"✨ 输入特征组合 ({len(golden_features)}个): {golden_features}")
     # 3. 参数优化
-    best_params = optimize_hyperparameters(X_pool, y_pool, n_trials=80)
+    best_params = optimize_hyperparameters(X_pool, y_pool, n_trials=500)
     # 保存最优参数
     with open(PARAMS_JSON, 'w', encoding='utf-8') as f:
         json.dump(best_params, f, indent=4)

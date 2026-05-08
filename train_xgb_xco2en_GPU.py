@@ -41,6 +41,8 @@ def load_and_preprocess(file_path):
     logger.info(f"📂 正在加载数据: {file_path}...")
     df = pd.read_pickle(file_path)
     df_clean = df.dropna().copy()
+    
+    df_clean['no2_trop_log'] = np.log(df_clean['no2_trop'])
 
     # 交叉验证时打乱顺序，时间排序不再是必须的，但保留特征工程
     df_clean['date'] = pd.to_datetime(df_clean['date'])
@@ -57,9 +59,6 @@ def load_and_preprocess(file_path):
     df_clean['ssrd_t2m_cross'] = df_clean['era5_ssrd'] * df_clean['era5_t2m']
     df_clean['ntl_nox_cross'] = df_clean['ntl'] * df_clean['meic_nox']
     df_clean['era5_wind_speed'] = np.sqrt(df_clean['era5_u100']**2 + df_clean['era5_v100']**2)
-    
-    # NO2 专属特征工程
-    df_clean['no2_trop_log'] = np.log1p(np.maximum(df_clean['no2_trop'], 0))
 
     return df_clean
 
@@ -105,7 +104,7 @@ def perform_shap_feature_selection(X_train, y_train, feature_names, top_n=20):
 def optimize_xgb(X_pool, y_pool, n_trials=50):
     def objective(trial):
         param = {
-            'n_estimators': trial.suggest_int('n_estimators', 300, 1000, step=100),
+            'n_estimators': trial.suggest_int('n_estimators', 500, 3000, step=100),
             'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
             'max_depth': trial.suggest_int('max_depth', 5, 12),
             'subsample': trial.suggest_float('subsample', 0.6, 1.0),
@@ -154,17 +153,17 @@ def optimize_xgb(X_pool, y_pool, n_trials=50):
 # 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/xco2_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
+    file_path = '/home/whdong/dl/data/TABLE-SHPXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
     target = 'xco2_enhanced'
     
     initial_features = [
         'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
-        'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10', 'era5_wind_speed',
-        'grid_lat', 'grid_lon', 'dem_mean', 'dem_std', 
+        'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10','era5_wind_speed',
+        'grid_lat', 'grid_lon', 'dem_mean', 
         'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
         'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
-        'meic_nox', 'ntl', 'ndvi', 'ndvi_std', 'sif_740', 'sif_variance',
-        'no2_amf_trop', 'no2_trop', 'no2_variance', 'no2_trop_log'
+        'meic_nox', 'ntl', 'ndvi', 'sif_740', 'no2_trop_log',
+        #'no2_trop' 
     ]
     
     # 1. 准备全局数据 (不再切分测试集/训练集)
@@ -186,7 +185,7 @@ if __name__ == "__main__":
     X_all_selected_raw = X_all_raw[:, selected_indices]
 
     # 3. 执行参数寻优 (传入未缩放的数据，函数内部有缩放)
-    best_params = optimize_xgb(X_all_selected_raw, y_all, n_trials=50)
+    best_params = optimize_xgb(X_all_selected_raw, y_all, n_trials=500)
     best_params['tree_method'] = 'hist'
     best_params['device'] = 'cuda'
     

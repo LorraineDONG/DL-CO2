@@ -24,7 +24,7 @@ except ImportError:
 # ==========================================
 # 1. 路径与配置加载 (与训练脚本对齐)
 # ==========================================
-DATA_PATH = '/home/whdong/dl/xco2_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
+DATA_PATH = '/home/whdong/dl/data/xco2_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
 PARAMS_JSON = '/home/whdong/dl/best_params/train_xgb_xco2en_SHP_10fold_best.json'
 FEATURES_JSON = '/home/whdong/dl/best_params/selected_features_10fold.json'
 MODEL_PATH = '/home/whdong/dl/models/XCO2en_SHP-xgb_10fold_model.pkl' 
@@ -34,14 +34,24 @@ os.makedirs(FIG_SAVE_DIR, exist_ok=True)
 
 # 必须与训练脚本中完全一致的 32 个初始特征
 INITIAL_FEATURES = [
-    'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
-    'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10', 'era5_wind_speed',
-    'grid_lat', 'grid_lon', 'dem_mean', 'dem_std', 
-    'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
-    'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
-    'meic_nox', 'ntl', 'ndvi', 'ndvi_std', 'sif_740', 'sif_variance',
-    'no2_amf_trop', 'no2_trop', 'no2_variance', 'no2_trop_log'
-]
+        'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
+        'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10',
+        'grid_lat', 'grid_lon', 'dem_mean', 
+        'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
+        'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
+        'meic_nox', 'ntl', 'ndvi', 'sif_740', 
+        'no2_amf_trop', 'no2_trop', 
+        'era5_wind_speed'
+    ]
+# [
+#     'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
+#     'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10', 'era5_wind_speed',
+#     'grid_lat', 'grid_lon', 'dem_mean', 'dem_std', 
+#     'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
+#     'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
+#     'meic_nox', 'ntl', 'ndvi', 'ndvi_std', 'sif_740', 'sif_variance',
+#     'no2_amf_trop', 'no2_trop', 'no2_variance', 'no2_trop_log'
+# ]
 
 def load_data_and_tools():
     with open(FEATURES_JSON, 'r') as f:
@@ -54,17 +64,45 @@ def load_data_and_tools():
     scaler = joblib.load(SCALER_PATH)
     
     df = pd.read_pickle(DATA_PATH).dropna()
+
     df['date'] = pd.to_datetime(df['date'])
-    df['month_sin'] = np.sin(2 * np.pi * df['date'].dt.month / 12.0)
-    df['month_cos'] = np.cos(2 * np.pi * df['date'].dt.month / 12.0)
-    df['doy_sin'] = np.sin(2 * np.pi * df['date'].dt.dayofyear / 365.25)
-    df['doy_cos'] = np.cos(2 * np.pi * df['date'].dt.dayofyear / 365.25)
+    df['month'] = df['date'].dt.month
+    df['doy'] = df['date'].dt.dayofyear
+    df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12.0)
+    df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12.0)
+    df['doy_sin'] = np.sin(2 * np.pi * df['doy'] / 365.25)
+    df['doy_cos'] = np.cos(2 * np.pi * df['doy'] / 365.25)
     df['ndvi_t2m_cross'] = df['ndvi'] * df['era5_t2m']
     df['ssrd_t2m_cross'] = df['era5_ssrd'] * df['era5_t2m']
     df['ntl_nox_cross'] = df['ntl'] * df['meic_nox']
     df['era5_wind_speed'] = np.sqrt(df['era5_u100']**2 + df['era5_v100']**2)
+    df['vc_cross'] = df['era5_blh'] * df['era5_wind_speed']
+    df['sif_monthly_mean'] = df.groupby(['grid_lon', 'grid_lat', 'month'])['sif_740'].transform('mean')
+    df['sif_anomaly'] = df['sif_740'] - df['sif_monthly_mean']
+    df.drop(columns=['sif_monthly_mean'], inplace=True) 
+    df['t2m_c'] = df['era5_t2m'] - 273.15
+    df['d2m_c'] = df['era5_d2m'] - 273.15
+    df['es'] = 0.611 * np.exp((17.27 * df['t2m_c']) / (df['t2m_c'] + 237.3))
+    df['ea'] = 0.611 * np.exp((17.27 * df['d2m_c']) / (df['d2m_c'] + 237.3))
+    df['vpd'] = df['es'] - df['ea']
+    df.drop(columns=['t2m_c', 'd2m_c', 'es', 'ea'], inplace=True) 
+    df['no2_ntl_ratio'] = df['no2_trop'] / (df['ntl'] + 1e-8)
+    df['no2_meic_ratio'] = df['no2_trop'] / (df['meic_nox'] + 1e-8)
+    df['sif_ssrd_ratio'] = df['sif_740'] / (df['era5_ssrd'] + 1e-8)
+    df['potential_temp'] = df['era5_t2m'] * (100000.0 / df['era5_sp']) ** 0.286
     df['no2_trop_log'] = np.log1p(np.maximum(df['no2_trop'], 0))
-    # df['no2_co_cross'] = df['no2_trop'] / (df['co'] + 1e-8)
+
+
+    # df['date'] = pd.to_datetime(df['date'])
+    # df['month_sin'] = np.sin(2 * np.pi * df['date'].dt.month / 12.0)
+    # df['month_cos'] = np.cos(2 * np.pi * df['date'].dt.month / 12.0)
+    # df['doy_sin'] = np.sin(2 * np.pi * df['date'].dt.dayofyear / 365.25)
+    # df['doy_cos'] = np.cos(2 * np.pi * df['date'].dt.dayofyear / 365.25)
+    # df['ndvi_t2m_cross'] = df['ndvi'] * df['era5_t2m']
+    # df['ssrd_t2m_cross'] = df['era5_ssrd'] * df['era5_t2m']
+    # df['ntl_nox_cross'] = df['ntl'] * df['meic_nox']
+    df['era5_wind_speed'] = np.sqrt(df['era5_u100']**2 + df['era5_v100']**2)
+    # df['no2_trop_log'] = np.log1p(np.maximum(df['no2_trop'], 0))
     
     return df, selected_features, best_params, production_model, scaler
 
@@ -110,11 +148,19 @@ def plot_all(df, y_true, y_pred, features, model, X_scaled):
     sc = ax.scatter(xt, yp, c=z, s=5, cmap='viridis')
     ax.plot([xt.min(), xt.max()], [xt.min(), xt.max()], 'k--', label='1:1 Line')
     
+    # 【新增修改 1】：添加横纵坐标名称
+    ax.set_xlabel('Observed XCO2 Enhanced (ppm)', fontsize=12)
+    ax.set_ylabel('Predicted XCO2 Enhanced (ppm)', fontsize=12)
+    
     r2 = r2_score(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    ax.set_title(f'OOF Evaluation (R²={r2:.3f}, RMSE={rmse:.3f})')
+    
+    # 【新增修改 2】：将 OOF 改为易懂的标题
+    ax.set_title(f'Cross-Validation Evaluation (R²={r2:.3f}, RMSE={rmse:.3f})', fontsize=14)
     plt.colorbar(sc, label='Density')
+    plt.tight_layout()
     plt.savefig(f"{FIG_SAVE_DIR}density_scatter.png")
+    plt.close()
     
     print("🎨 绘图中: SHAP 解释图...")
     explainer = shap.TreeExplainer(model)
@@ -123,7 +169,9 @@ def plot_all(df, y_true, y_pred, features, model, X_scaled):
     
     plt.figure(figsize=(10, 8))
     shap.summary_plot(shap_v, X_sample, feature_names=features, show=False)
+    plt.tight_layout()
     plt.savefig(f"{FIG_SAVE_DIR}shap_summary.png")
+    plt.close()
 
     print("🎨 绘图中: 空间误差地图...")
     df_err = pd.DataFrame({'lon': df['grid_lon'], 'lat': df['grid_lat'], 'err': y_pred - y_true})
@@ -133,15 +181,19 @@ def plot_all(df, y_true, y_pred, features, model, X_scaled):
         fig, ax = plt.subplots(figsize=(10, 6), subplot_kw={'projection': ccrs.PlateCarree()})
         ax.add_feature(cfeature.COASTLINE)
         ax.add_feature(cfeature.BORDERS, linestyle=':')
+        # 【新增修改 3】：将散点大小 s=10 修改为 s=1.5
         sc = ax.scatter(grid_err['lon'], grid_err['lat'], c=grid_err['err'], 
-                        cmap='RdBu_r', vmin=-2, vmax=2, s=10, transform=ccrs.PlateCarree())
+                        cmap='RdBu_r', vmin=-2, vmax=2, s=1.5, transform=ccrs.PlateCarree())
     else:
         fig, ax = plt.subplots(figsize=(10, 6))
-        sc = ax.scatter(grid_err['lon'], grid_err['lat'], c=grid_err['err'], cmap='RdBu_r', vmin=-2, vmax=2, s=10)
+        # 【新增修改 3】：将散点大小 s=10 修改为 s=1.5
+        sc = ax.scatter(grid_err['lon'], grid_err['lat'], c=grid_err['err'], cmap='RdBu_r', vmin=-2, vmax=2, s=1.5)
     
     plt.colorbar(sc, label='Bias (Pred - Obs) [ppm]')
-    plt.title('Spatial Distribution of Residuals')
+    plt.title('Spatial Distribution of Residuals (Cross-Validation)')
+    plt.tight_layout()
     plt.savefig(f"{FIG_SAVE_DIR}spatial_bias_map.png")
+    plt.close()
 
 if __name__ == "__main__":
     df, selected_features, params, model, loaded_scaler = load_data_and_tools()

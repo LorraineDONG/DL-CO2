@@ -83,7 +83,7 @@ def load_and_preprocess(file_path):
 def optimize_tabnet(X_pool, y_pool, n_trials=50):
     def objective(trial):
         # TabNet 专属超参数空间
-        n_da = trial.suggest_int('n_da', 8, 64, step=8)
+        n_da = trial.suggest_int('n_da', 8, 32, step=8)
         n_steps = trial.suggest_int('n_steps', 3, 8)
         lambda_sparse = trial.suggest_float('lambda_sparse', 1e-6, 1e-2, log=True)
         gamma = trial.suggest_float('gamma', 1.0, 2.0)
@@ -122,7 +122,7 @@ def optimize_tabnet(X_pool, y_pool, n_trials=50):
                 eval_name=['valid'], eval_metric=['rmse'],
                 loss_fn=torch.nn.SmoothL1Loss(),
                 max_epochs=100, patience=8,         
-                batch_size=16384, virtual_batch_size=2048
+                batch_size=4096, virtual_batch_size=1024
             )
             
             # 使用预测结果反标准化，以真实量纲评估 RMSE
@@ -142,7 +142,7 @@ def optimize_tabnet(X_pool, y_pool, n_trials=50):
 # 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/TABLE-SHPXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co.pkl'
+    file_path = '/home/whdong/dl/data/TABLE-SHPXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
     target = 'xco2_enhanced'
     
     # 🌟 直接使用与 RF/LGB 完全一致的特征集合
@@ -157,13 +157,15 @@ if __name__ == "__main__":
     #     'ssrd_t2m_cross', 'ntl_nox_cross', 'ndvi_t2m_cross'
     # ]
 
-    golden_features = ['grid_lon', 'grid_lat',
-                       'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 
-                       'era5_tcwv', 'era5_u100', 'era5_v100', 'ndvi_t2m_cross', 
-                       'no2_trop_log', 'no2_co_cross', 'ntl', 'no2_amf_trop', 
-                       'no2_variance', 'doy_sin', 'doy_cos', 'month_sin', 
-                       'dem_mean', 'sif_740', 'sif_variance']
-
+    golden_features= [
+    'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
+    'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10', 
+    'grid_lat', 'grid_lon', 'dem_mean', 'dem_std', 
+    'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
+    'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
+    'meic_nox', 'ntl', 'ndvi', 'ndvi_std', 'sif_740', 'sif_variance',
+    'no2_amf_trop', 'no2_trop', 'no2_variance', 'no2_trop_log'
+    ]
 
     # 1. 准备数据
     df = load_and_preprocess(file_path)
@@ -182,7 +184,7 @@ if __name__ == "__main__":
     logger.info(f"✨ 输入特征组合 ({len(golden_features)}个): {golden_features}")
     
     # 3. 自动调参 (耗时较长，建议先用 30-50 trial 测试)
-    best_params = optimize_tabnet(X_pool_vals, y_pool_vals, n_trials=50)
+    best_params = optimize_tabnet(X_pool_vals, y_pool_vals, n_trials=500)
 
     # 保存最优参数
     import json

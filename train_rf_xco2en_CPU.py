@@ -15,11 +15,11 @@ from sklearn.inspection import permutation_importance
 # ==========================================
 # 0. 全局配置与路径初始化
 # ==========================================
-LOG_FILE = '/home/whdong/dl/logfile/XCO2en_WLG_rf_training.log'
-DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_WLG_optuna_rf_study.db' 
-PARAMS_JSON = '/home/whdong/dl/best_params/train_rf_xco2en_WLG_best_params.json'
-MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_WLG-rf_model.pkl' 
-SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_WLG-rf_scaler.pkl'    
+LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SHP_rf_training.log'
+DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SHP_optuna_rf_study.db' 
+PARAMS_JSON = '/home/whdong/dl/best_params/train_rf_xco2en_SHP_best_params.json'
+MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-rf_model.pkl' 
+SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-rf_scaler.pkl'    
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.makedirs(os.path.dirname(DB_FILE.replace('sqlite:///', '')), exist_ok=True)
@@ -136,13 +136,13 @@ def auto_feature_selection(X_train, y_train, candidate_features, force_keep, cv_
 def optimize_rf(X_pool, y_pool, n_trials=100):
     def objective(trial):
         param = {
-            'n_estimators': trial.suggest_int('n_estimators', 200, 400, step=50),
-            'max_depth': trial.suggest_int('max_depth', 10, 30),
-            'min_samples_split': trial.suggest_int('min_samples_split', 10, 80),
-            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 5, 40),
-            'max_leaf_nodes': trial.suggest_int('max_leaf_nodes', 500, 2000),
-            'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', 0.1, 0.4]),
-            'max_samples': trial.suggest_float('max_samples', 0.2, 0.8),
+            'n_estimators': trial.suggest_int('n_estimators', 200, 1000, step=50),
+            'max_depth': trial.suggest_int('max_depth', 5, 50),
+            'min_samples_split': trial.suggest_int('min_samples_split', 2, 100),
+            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 20),
+            'max_leaf_nodes': trial.suggest_int('max_leaf_nodes', 1000, 1200),
+            'max_features': trial.suggest_float('max_features', 0.1, 0.8),
+            'max_samples': trial.suggest_float('max_samples', 0.5, 1.0),
             'random_state': 42,
             'n_jobs': -1,
             'bootstrap': True
@@ -176,7 +176,7 @@ def optimize_rf(X_pool, y_pool, n_trials=100):
 # 4. 主程序入口
 # ==========================================
 if __name__ == "__main__":
-    file_path = '/home/whdong/dl/TABLE-SHPXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co.pkl'
+    file_path = '/home/whdong/dl/data/TABLE-SHPXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
     target = 'xco2_enhanced'
     
     # 特征池
@@ -188,24 +188,23 @@ if __name__ == "__main__":
     'era5_t2m', #'era5_t2m_lag1', 'era5_t2m_lag2', 'era5_t2m_lag3', #'era5_t2m_lead1', 'era5_t2m_lead2', 'era5_t2m_lead3', 
     'era5_tcwv',#'era5_tcwv_lag1', 'era5_tcwv_lag2', 'era5_tcwv_lag3', #'era5_tcwv_lead1', 'era5_tcwv_lead2', 'era5_tcwv_lead3', 
     'era5_u100', #'era5_u100_lag1', 'era5_u100_lag2', 'era5_u100_lag3', 'era5_u100_lead1', 'era5_u100_lead2', 'era5_u100_lead3', 
-    #'era5_u10', 'era5_u10_lag1', 'era5_u10_lag2', 'era5_u10_lag3', 'era5_u10_lead1', 'era5_u10_lead2', 'era5_u10_lead3', 
+    'era5_u10', #'era5_u10_lag1', 'era5_u10_lag2', 'era5_u10_lag3', 'era5_u10_lead1', 'era5_u10_lead2', 'era5_u10_lead3', 
     'era5_v100', #'era5_v100_lag1', 'era5_v100_lag2', 'era5_v100_lag3', 'era5_v100_lead1', 'era5_v100_lead2', 'era5_v100_lead3', 
-    #'era5_v10', #'era5_v10_lag1', 'era5_v10_lag2', 'era5_v10_lag3', 'era5_v10_lead1', 'era5_v10_lead2', 'era5_v10_lead3', 
+    'era5_v10', #'era5_v10_lag1', 'era5_v10_lag2', 'era5_v10_lag3', 'era5_v10_lead1', 'era5_v10_lead2', 'era5_v10_lead3', 
     #'era5_wind_dir_100m', 'era5_wind_dir_100m_lag1', 'era5_wind_dir_100m_lag2', 'era5_wind_dir_100m_lag3', 'era5_wind_dir_100m_lead1', #'era5_wind_dir_100m_lead2', 'era5_wind_dir_100m_lead3', 
     #'era5_wind_dir_10m', 'era5_wind_dir_10m_lag1', #'era5_wind_dir_10m_lag2', 'era5_wind_dir_10m_lag3', 'era5_wind_dir_10m_lead1', #'era5_wind_dir_10m_lead2', 'era5_wind_dir_10m_lead3', 
     #'era5_wind_speed_100m','era5_wind_speed_100m_lag1', 'era5_wind_speed_100m_lag2', 'era5_wind_speed_100m_lag3', 'era5_wind_speed_100m_lead1', #'era5_wind_speed_100m_lead2', 'era5_wind_speed_100m_lead3', 
     #'era5_wind_speed_10m', # 'era5_wind_speed_10m_lag1', 'era5_wind_speed_10m_lag2', 'era5_wind_speed_10m_lag3', 'era5_wind_speed_10m_lead1', #'era5_wind_speed_10m_lead2', 'era5_wind_speed_10m_lead3', 
-    'grid_lon', 'grid_lat', 
-    'ndvi_t2m_cross','ssrd_t2m_cross','ntl_nox_cross','no2_trop_log','no2_co_cross',
-    'meic_nox', 'ndvi', 'ndvi_std', 'ntl', 
-    'no2_amf_trop', 'no2_variance', 
+    'grid_lon', 'grid_lat', 'sif_740',
+    'ndvi_t2m_cross','ssrd_t2m_cross','ntl_nox_cross','no2_co_cross',
+    'meic_nox', 'ndvi', 'ntl', 'dem_mean',
+    #'no2_amf_trop', 'no2_variance', 'ndvi_std', 
     'doy_sin', 'doy_cos', 'month_sin', 'month_cos', 
-    'co_variance', 'dem_mean', 'dem_std',
-    'sif_740', 'sif_variance'
+    #'co_variance',  'dem_std', 'sif_variance'
 ]
     
     # 强制保留名单
-    force_keep_features = ['no2_trop'] #'co', 
+    force_keep_features = ['no2_trop_log'] 
     
     # 准备数据
     df = load_and_preprocess(file_path)
@@ -226,10 +225,8 @@ if __name__ == "__main__":
     logger.info(f"✨ 最终进入 Optuna 的精简特征组合 ({len(best_features)}个): {best_features}")
 
     # 自动化参数优化 (Optuna)
-    best_params = optimize_rf(X_pool, y_pool, n_trials=50) # 建议测试时先设 50 试运行
-    
-    max_trees = 1000
-    best_params['n_estimators'] = max_trees
+    best_params = optimize_rf(X_pool, y_pool, n_trials=800) 
+    max_trees = best_params['n_estimators']
     
     with open(PARAMS_JSON, 'w', encoding='utf-8') as f:
         json.dump(best_params, f, indent=4)
