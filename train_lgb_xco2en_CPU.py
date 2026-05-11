@@ -11,10 +11,10 @@ from sklearn.model_selection import KFold, train_test_split
 # ==========================================
 # 0. 全局配置与路径初始化
 # ==========================================
-LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SF_lgb_training.log'
-DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SF_optuna_lgb_study.db' 
-PARAMS_JSON = '/home/whdong/dl/best_params/train_lgb_xco2en_SF_best_params.json'
-MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SF-lgb_model.pkl'    
+LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SF_lgb_training(A01-No lead and lag).log'
+DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SF_optuna_lgb_study-A01.db' 
+PARAMS_JSON = '/home/whdong/dl/best_params/train_lgb_xco2en_SF_best_params-A01.json'
+MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SF-lgb_model-A01.pkl'    
 # 自动创建不存在的文件夹
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.makedirs(os.path.dirname(DB_FILE.replace('sqlite:///', '')), exist_ok=True)
@@ -57,6 +57,7 @@ def load_and_preprocess(file_path):
     df_clean['ssrd_t2m_cross'] = df_clean['era5_ssrd'] * df_clean['era5_t2m']
     df_clean['ntl_nox_cross'] = df_clean['ntl'] * df_clean['meic_nox']
     df_clean['era5_wind_speed'] = np.sqrt(df_clean['era5_u100']**2 + df_clean['era5_v100']**2)
+    df_clean['no2_trop_log'] = np.log(df_clean['no2_trop'])
     
     return df_clean
 # ==========================================
@@ -118,45 +119,53 @@ if __name__ == "__main__":
     
     # 🌟 直接使用与 RF 完全一致的特征集合
     golden_features = [
-        'era5_u100', 'era5_v100', 'grid_lon', 'grid_lat',
-        'sif_740', 'no2_trop', 'meic_nox', 'dem_mean',
-        'era5_tcwv', 'era5_ssrd', 'era5_blh', 'era5_t2m', 
-        'ntl', 'ndvi', 'ndvi_std', 
-        'month_sin', 'month_cos', 
-        'sif_variance', 'era5_wind_speed',
-        'no2_amf_trop', 'no2_variance', 
-        'ssrd_t2m_cross', 'ntl_nox_cross', 'ndvi_t2m_cross'
+        'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
+        'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10','era5_wind_speed',
+        'grid_lat', 'grid_lon', 'dem_mean', 
+        'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
+        'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
+        'meic_nox', 'ntl', 'ndvi','no2_trop_log',
     ]
-    # 1. 准备数据
-    df = load_and_preprocess(file_path)
     
-    # 2. 数据划分：与 RF 完全对齐的 train_test_split 逻辑
-    X = df[golden_features]
-    y = df[target]
+    # 1. 准备全局数据
+    df = load_and_preprocess(file_path)
+    X_full = df[golden_features]
+    y_full = df[target]
+    
+    # 2. 数据划分：切分出 20% 绝对盲测集 (完全冻结)
     X_pool, X_test, y_pool, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+        X_full, y_full, test_size=0.2, random_state=42
     )
     logger.info(f"✨ 输入特征组合 ({len(golden_features)}个): {golden_features}")
-    # 3. 参数优化
+    
+    # 3. 参数优化 (仅在 80% 的 Pool 上进行，杜绝参数泄露)
     best_params = optimize_hyperparameters(X_pool, y_pool, n_trials=500)
-    # 保存最优参数
+    
     with open(PARAMS_JSON, 'w', encoding='utf-8') as f:
         json.dump(best_params, f, indent=4)
     logger.info(f"✅ 最优参数已安全保存至: {PARAMS_JSON}")
-    # 4. 终极盲测阶段
-    logger.info("🏁 执行盲测集评估与特征物理重要性分析...")
+
+    # ==========================================
+    # 4. 终极盲测阶段 (严禁测试集参与 Early Stopping)
+    # ==========================================
+    logger.info("🏁 阶段三：执行终极盲测集评估，并对比训练集性能...")
     
     initial_lr = best_params.pop('learning_rate')
-    # 使用更大的 n_estimators 上限，依靠 early_stopping 来寻找最佳迭代次数
-    final_model = lgb.LGBMRegressor(**best_params, n_estimators=10000, objective='huber') 
+    eval_model = lgb.LGBMRegressor(**best_params, n_estimators=10000, objective='huber') 
     
-    # 动态学习率衰减
+    # 【修复 1】：从 pool 中再切分内部验证集用于 early stopping，对 test 集严格保密
+    X_train_es, X_val_es, y_train_es, y_val_es = train_test_split(
+        X_pool, y_pool, test_size=0.1, random_state=42
+    )
+
     lr_scheduler = lgb.reset_parameter(
         learning_rate=lambda iter: initial_lr * (0.999 ** iter) 
     )
-    final_model.fit(
-        X_pool, y_pool, 
-        eval_set=[(X_test, y_test)],
+    
+    # 训练评估模型
+    eval_model.fit(
+        X_train_es, y_train_es, 
+        eval_set=[(X_val_es, y_val_es)],
         eval_metric=['rmse', 'mae'],
         callbacks=[
             lgb.early_stopping(stopping_rounds=300, verbose=False),
@@ -164,37 +173,67 @@ if __name__ == "__main__":
         ]
     )
     
-    y_pred = final_model.predict(X_test)
-    y_pred_train_final = final_model.predict(X_pool)
+    # 指标计算与对比
+    y_pred_test = eval_model.predict(X_test)
+    y_pred_train_final = eval_model.predict(X_pool)
     
-    # --- 指标计算 (加入 Train R2 对齐 RF 报告) ---
     train_r2_final = r2_score(y_pool, y_pred_train_final)
-    test_r2 = r2_score(y_test, y_pred)
-    test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    test_mae = mean_absolute_error(y_test, y_pred)
-    test_bias = np.mean(y_pred - y_test)
-    # --- 基于 gain 的特征重要性并归一化 ---
-    raw_gain = final_model.booster_.feature_importance(importance_type='gain')
+    train_rmse_final = np.sqrt(mean_squared_error(y_pool, y_pred_train_final))
+
+    test_r2 = r2_score(y_test, y_pred_test)
+    test_rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
+    test_mae = mean_absolute_error(y_test, y_pred_test)
+    test_bias = np.mean(y_pred_test - y_test)
+
+    # 提取特征重要性
+    raw_gain = eval_model.booster_.feature_importance(importance_type='gain')
     normalized_gain = raw_gain / raw_gain.sum()
     importance_df = pd.DataFrame({
-        'Feature': final_model.feature_name_,
+        'Feature': eval_model.feature_name_,
         'Importance (Normalized Gain)': normalized_gain
     }).sort_values(by='Importance (Normalized Gain)', ascending=False)
     
-    # ==========================================
-    # 5. 输出报告 (严格与 RF 格式对齐)
-    # ==========================================
+    # 输出统一报告
     logger.info("="*30 + " LIGHTGBM FINAL REPORT " + "="*30)
     logger.info(f"Train R²  : {train_r2_final:.4f}")
+    logger.info(f"Train RMSE: {train_rmse_final:.4f} ppm")
+    logger.info("-" * 25)
     logger.info(f"Test R²   : {test_r2:.4f}")
     logger.info(f"Test RMSE : {test_rmse:.4f} ppm")
     logger.info(f"Test MAE  : {test_mae:.4f} ppm")
     logger.info(f"Test BIAS : {test_bias:.4f} ppm")
-    logger.info("-" * 25 + " 气象与卫星因子贡献度排名前 15 " + "-" * 25)
     
+    logger.info("-" * 25 + " 气象与卫星因子贡献度排名前 15 " + "-" * 25)
     for idx, row in importance_df.head(15).iterrows():
         logger.info(f"  {row['Feature']:>22} : {row['Importance (Normalized Gain)']:.4f}")
-        
-    logger.info("="*88)
-    joblib.dump(final_model, MODEL_SAVE_PATH)
-    logger.info(f"✅ 模型已持久化至: {MODEL_SAVE_PATH}")
+    logger.info("="*85)
+
+    # ==========================================
+    # 5. 训练并保存最终生产模型 (使用 100% 数据)
+    # ==========================================
+    logger.info("💾 阶段四：使用 100% 数据训练最终生产模型并固化...")
+    
+    production_model = lgb.LGBMRegressor(**best_params, n_estimators=10000, objective='huber') 
+    
+    # 【修复 2】：为生产模型重新切分独立的 5% early stopping 验证集
+    X_prod_train, X_prod_val, y_prod_train, y_prod_val = train_test_split(
+        X_full, y_full, test_size=0.05, random_state=42
+    )
+
+    prod_lr_scheduler = lgb.reset_parameter(
+        learning_rate=lambda iter: initial_lr * (0.999 ** iter) 
+    )
+
+    production_model.fit(
+        X_prod_train, y_prod_train, 
+        eval_set=[(X_prod_val, y_prod_val)],
+        eval_metric=['rmse', 'mae'],
+        callbacks=[
+            lgb.early_stopping(stopping_rounds=300, verbose=False),
+            prod_lr_scheduler
+        ]
+    )
+
+    os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
+    joblib.dump(production_model, MODEL_SAVE_PATH)
+    logger.info(f"✅ 生产级模型已持久化至: {MODEL_SAVE_PATH}")

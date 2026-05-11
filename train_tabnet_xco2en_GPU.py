@@ -16,12 +16,12 @@ warnings.filterwarnings("ignore")
 # ==========================================
 # 0. 全局配置、设备与日志初始化
 # ==========================================
-LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SHP_tabnet_training.log'
-DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SHP_optuna_tabnet_study.db'
-PARAMS_JSON = '/home/whdong/dl/best_params/train_tabnet_xco2en_SHP_best_params.json'   
-MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-tabnet_model.zip'     
-SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-tabnet_scaler.pkl'
-Y_SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-tabnet_y_scaler.pkl' # 新增：保存目标变量的标准化器
+LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SHP_tabnet_training(A01-No lead and lag).log'
+DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SHP_optuna_tabnet_study-A01.db'
+PARAMS_JSON = '/home/whdong/dl/best_params/train_tabnet_xco2en_SHP_best_params-A01.json'   
+MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-tabnet_model-A01.zip'     
+SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-tabnet_scaler-A01.pkl'
+Y_SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-tabnet_y_scaler-A01.pkl'
 
 # 自动创建不存在的文件夹
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -71,7 +71,7 @@ def load_and_preprocess(file_path):
     df_clean['ntl_nox_cross'] = df_clean['ntl'] * df_clean['meic_nox']
     
     df_clean['no2_trop_log'] = np.log1p(np.maximum(df_clean['no2_trop'], 0))
-    df_clean['no2_co_cross'] = df_clean['no2_trop'] / (df_clean['co'] + 1e-8)
+    df_clean['era5_wind_speed'] = np.sqrt(df_clean['era5_u100']**2 + df_clean['era5_v100']**2)
     
     df_clean = df_clean.astype({col: 'float32' for col in df_clean.select_dtypes(include='float64').columns})
 
@@ -158,56 +158,127 @@ if __name__ == "__main__":
     # ]
 
     golden_features= [
-    'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
-    'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10', 
-    'grid_lat', 'grid_lon', 'dem_mean', 'dem_std', 
-    'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
-    'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
-    'meic_nox', 'ntl', 'ndvi', 'ndvi_std', 'sif_740', 'sif_variance',
-    'no2_amf_trop', 'no2_trop', 'no2_variance', 'no2_trop_log'
+        'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
+        'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10','era5_wind_speed',
+        'grid_lat', 'grid_lon', 'dem_mean', 
+        'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
+        'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
+        'meic_nox', 'ntl', 'ndvi','no2_trop_log',
     ]
 
-    # 1. 准备数据
+    # 1. 准备全局数据
     df = load_and_preprocess(file_path)
-    
-    # 2. 数据划分：与 RF/LGB 完全对齐的 train_test_split 逻辑
-    X = df[golden_features]
-    y = df[target]
-    
+    X_full_raw = df[golden_features].values
+    y_full_raw = df[target].values
+
+    # 2. 数据划分：切分出 20% 绝对盲测集 (完全冻结)
     X_pool_raw, X_test_raw, y_pool_raw, y_test_raw = train_test_split(
-        X, y, test_size=0.2, random_state=42
+        X_full_raw, y_full_raw, test_size=0.2, random_state=42
     )
-    
-    X_pool_vals = X_pool_raw.values
-    y_pool_vals = y_pool_raw.values
 
     logger.info(f"✨ 输入特征组合 ({len(golden_features)}个): {golden_features}")
     
-    # 3. 自动调参 (耗时较长，建议先用 30-50 trial 测试)
-    best_params = optimize_tabnet(X_pool_vals, y_pool_vals, n_trials=500)
+    # 3. 自动调参 (仅使用 Pool 数据，函数内部会处理标准化)
+    best_params = optimize_tabnet(X_pool_raw, y_pool_raw, n_trials=500)
 
     # 保存最优参数
     import json
     with open(PARAMS_JSON, 'w', encoding='utf-8') as f:
         json.dump(best_params, f, indent=4)
 
-    # 4. 终极盲测阶段：使用全量 Pool 数据训练最终模型
-    logger.info("🏁 执行终极全量训练与盲测集评估...")
+    # ==========================================
+    # 4. 终极盲测评估 (严格修复早停验证集数据泄露)
+    # ==========================================
+    logger.info("🏁 阶段三：执行终极盲测集评估，并对比训练集性能...")
     
-    # 最终模型训练前的全局标准化
-    final_x_scaler = StandardScaler()
-    X_pool = final_x_scaler.fit_transform(X_pool_vals).astype(np.float32)
-    X_test = final_x_scaler.transform(X_test_raw.values).astype(np.float32)
+    # 【修复点】：先切分 early stopping 验证集，然后再分别进行标准化
+    X_train_es_raw, X_val_es_raw, y_train_es_raw, y_val_es_raw = train_test_split(
+        X_pool_raw, y_pool_raw, test_size=0.1, random_state=42
+    )
 
-    final_y_scaler = StandardScaler()
-    y_pool = final_y_scaler.fit_transform(y_pool_vals.reshape(-1, 1)).astype(np.float32)
-    # y_test_raw 保持原样用于最终评估
+    # 严格按照 Train (ES) 数据拟合 Scaler
+    eval_x_scaler = StandardScaler()
+    X_train_es = eval_x_scaler.fit_transform(X_train_es_raw).astype(np.float32)
+    X_val_es = eval_x_scaler.transform(X_val_es_raw).astype(np.float32)
+    X_test = eval_x_scaler.transform(X_test_raw).astype(np.float32)
+    # 转换整个 Pool 以便计算最终 Train 指标
+    X_pool_for_eval = eval_x_scaler.transform(X_pool_raw).astype(np.float32)
+
+    eval_y_scaler = StandardScaler()
+    y_train_es = eval_y_scaler.fit_transform(y_train_es_raw.reshape(-1, 1)).astype(np.float32)
+    y_val_es = eval_y_scaler.transform(y_val_es_raw.reshape(-1, 1)).astype(np.float32)
 
     final_n_da = best_params.pop('n_da')
     final_lr = best_params.pop('lr')
     final_wd = best_params.pop('weight_decay')
     
-    final_model = TabNetRegressor(
+    eval_model = TabNetRegressor(
+        n_d=final_n_da, n_a=final_n_da,
+        **best_params,
+        optimizer_fn=torch.optim.Adam,
+        optimizer_params=dict(lr=final_lr, weight_decay=final_wd),
+        scheduler_params={"mode": "min", "patience": 10, "factor": 0.5},
+        scheduler_fn=torch.optim.lr_scheduler.ReduceLROnPlateau,
+        mask_type='entmax', verbose=0, seed=29, device_name=device
+    )
+
+    # 拟合盲测模型
+    eval_model.fit(
+        X_train=X_train_es, y_train=y_train_es,
+        eval_set=[(X_val_es, y_val_es)],
+        eval_name=['valid'], eval_metric=['rmse'],
+        loss_fn=torch.nn.SmoothL1Loss(),
+        max_epochs=300, patience=30,
+        batch_size=1024, virtual_batch_size=128
+    )
+    
+    # 预测并反标准化
+    train_preds_scaled = eval_model.predict(X_pool_for_eval)
+    train_preds = eval_y_scaler.inverse_transform(train_preds_scaled).flatten()
+    
+    test_preds_scaled = eval_model.predict(X_test)
+    test_preds = eval_y_scaler.inverse_transform(test_preds_scaled).flatten()
+
+    # 计算指标
+    train_r2 = r2_score(y_pool_raw, train_preds)
+    train_rmse = np.sqrt(mean_squared_error(y_pool_raw, train_preds))
+
+    test_r2 = r2_score(y_test_raw, test_preds)
+    test_rmse = np.sqrt(mean_squared_error(y_test_raw, test_preds))
+    test_mae = mean_absolute_error(y_test_raw, test_preds)
+    test_bias = np.mean(test_preds - y_test_raw)
+    
+    # 输出对齐的报告格式
+    logger.info("="*30 + " TABNET FINAL REPORT " + "="*30)
+    logger.info(f"Train R²  : {train_r2:.4f}")
+    logger.info(f"Train RMSE: {train_rmse:.4f} ppm")
+    logger.info("-" * 25)
+    logger.info(f"Test R²   : {test_r2:.4f}")
+    logger.info(f"Test RMSE : {test_rmse:.4f} ppm")
+    logger.info(f"Test MAE  : {test_mae:.4f} ppm")
+    logger.info(f"Test BIAS : {test_bias:.4f} ppm")
+    logger.info("="*85)
+
+    # ==========================================
+    # 5. 训练最终的生产模型 (使用 100% 数据)
+    # ==========================================
+    logger.info("💾 阶段四：使用 100% 数据训练最终生产模型并固化...")
+
+    # 切分生产模型的 early stopping 验证集 (5% 即可)
+    X_prod_tr_raw, X_prod_val_raw, y_prod_tr_raw, y_prod_val_raw = train_test_split(
+        X_full_raw, y_full_raw, test_size=0.05, random_state=42
+    )
+
+    # 生产模型的独立 Scaler
+    production_x_scaler = StandardScaler()
+    X_prod_tr = production_x_scaler.fit_transform(X_prod_tr_raw).astype(np.float32)
+    X_prod_val = production_x_scaler.transform(X_prod_val_raw).astype(np.float32)
+
+    production_y_scaler = StandardScaler()
+    y_prod_tr = production_y_scaler.fit_transform(y_prod_tr_raw.reshape(-1, 1)).astype(np.float32)
+    y_prod_val = production_y_scaler.transform(y_prod_val_raw.reshape(-1, 1)).astype(np.float32)
+
+    production_model = TabNetRegressor(
         n_d=final_n_da, n_a=final_n_da,
         **best_params,
         optimizer_fn=torch.optim.Adam,
@@ -216,65 +287,19 @@ if __name__ == "__main__":
         scheduler_fn=torch.optim.lr_scheduler.ReduceLROnPlateau,
         mask_type='entmax', verbose=1, seed=29, device_name=device
     )
-    
-    # 由于没有独立的验证集，我们从 X_pool 划分一小部分作为 early stopping 的监控
-    X_train_final, X_val_final, y_train_final, y_val_final = train_test_split(
-        X_pool, y_pool, test_size=0.1, random_state=42
-    )
 
-    final_model.fit(
-        X_train=X_train_final, y_train=y_train_final,
-        eval_set=[(X_val_final, y_val_final)],
+    production_model.fit(
+        X_train=X_prod_tr, y_train=y_prod_tr,
+        eval_set=[(X_prod_val, y_prod_val)],
         eval_name=['valid'], eval_metric=['rmse'],
         loss_fn=torch.nn.SmoothL1Loss(),
-        max_epochs=300,  # 增大 epoch 让其充分拟合
-        patience=30,
+        max_epochs=300, patience=30,
         batch_size=1024, virtual_batch_size=128
     )
-    
-    # --- 指标计算 (加入 Train R2 对齐 RF/LGB 报告) ---
-    
-    # 测试集预测与反标准化
-    y_pred_test_scaled = final_model.predict(X_test)
-    y_pred_test = final_y_scaler.inverse_transform(y_pred_test_scaled).flatten()
-    
-    # 训练集(Pool)预测与反标准化
-    y_pred_train_scaled = final_model.predict(X_pool)
-    y_pred_train_final = final_y_scaler.inverse_transform(y_pred_train_scaled).flatten()
-    
-    y_test_actual = y_test_raw.values
 
-    train_r2_final = r2_score(y_pool_vals, y_pred_train_final)
-    test_r2 = r2_score(y_test_actual, y_pred_test)
-    test_rmse = np.sqrt(mean_squared_error(y_test_actual, y_pred_test))
-    test_mae = mean_absolute_error(y_test_actual, y_pred_test)
-    test_bias = np.mean(y_pred_test - y_test_actual)
-
-    # --- 提取 TabNet 特征重要性 ---
-    importance_df = pd.DataFrame({
-        'Feature': golden_features,
-        'Importance (Normalized)': final_model.feature_importances_
-    }).sort_values(by='Importance (Normalized)', ascending=False)
-    
-    # ==========================================
-    # 5. 输出报告 (严格与 RF/LGB 格式对齐)
-    # ==========================================
-    logger.info("="*30 + " TABNET FINAL REPORT " + "="*30)
-    logger.info(f"Train R²  : {train_r2_final:.4f}")
-    logger.info(f"Test R²   : {test_r2:.4f}")
-    logger.info(f"Test RMSE : {test_rmse:.4f} ppm")
-    logger.info(f"Test MAE  : {test_mae:.4f} ppm")
-    logger.info(f"Test BIAS : {test_bias:.4f} ppm")
-    logger.info("-" * 25 + " 气象与卫星因子贡献度排名前 15 " + "-" * 25)
-    
-    for idx, row in importance_df.head(15).iterrows():
-        logger.info(f"  {row['Feature']:>22} : {row['Importance (Normalized)']:.4f}")
-        
-    logger.info("="*85)
-
-    # 保存模型与标准化器
-    joblib.dump(final_x_scaler, SCALER_SAVE_PATH)
-    joblib.dump(final_y_scaler, Y_SCALER_SAVE_PATH)
+    # 保存生产级模型和对应Scaler
+    joblib.dump(production_x_scaler, SCALER_SAVE_PATH)
+    joblib.dump(production_y_scaler, Y_SCALER_SAVE_PATH)
     save_path_without_ext = MODEL_SAVE_PATH.replace('.zip', '')
-    final_model.save_model(save_path_without_ext)
-    logger.info(f"✅ 模型与标准化器已持久化至: {os.path.dirname(MODEL_SAVE_PATH)}")
+    production_model.save_model(save_path_without_ext)
+    logger.info(f"✅ 生产级模型与全量标准化器已持久化至: {os.path.dirname(MODEL_SAVE_PATH)}")

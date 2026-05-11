@@ -24,7 +24,7 @@ except ImportError:
 # ==========================================
 # 1. 路径与配置加载 (与训练脚本对齐)
 # ==========================================
-DATA_PATH = '/home/whdong/dl/data/xco2_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
+DATA_PATH = '/home/whdong/dl/data/TABLE-SHPXCO2en_sif_no2_era5_ndvi_meic_ntl_dem_co_0.1deg.pkl'
 PARAMS_JSON = '/home/whdong/dl/best_params/train_xgb_xco2en_SHP_10fold_best.json'
 FEATURES_JSON = '/home/whdong/dl/best_params/selected_features_10fold.json'
 MODEL_PATH = '/home/whdong/dl/models/XCO2en_SHP-xgb_10fold_model.pkl' 
@@ -34,24 +34,14 @@ os.makedirs(FIG_SAVE_DIR, exist_ok=True)
 
 # 必须与训练脚本中完全一致的 32 个初始特征
 INITIAL_FEATURES = [
-        'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
-        'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10',
+         'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
+        'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10','era5_wind_speed',
         'grid_lat', 'grid_lon', 'dem_mean', 
         'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
         'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
-        'meic_nox', 'ntl', 'ndvi', 'sif_740', 
-        'no2_amf_trop', 'no2_trop', 
-        'era5_wind_speed'
+        'meic_nox', 'ntl', 'ndvi', 'sif_740', 'no2_trop_log'
     ]
-# [
-#     'era5_blh', 'era5_d2m', 'era5_sp', 'era5_ssrd', 'era5_t2m', 'era5_tcwv', 
-#     'era5_u100', 'era5_v100', 'era5_u10', 'era5_v10', 'era5_wind_speed',
-#     'grid_lat', 'grid_lon', 'dem_mean', 'dem_std', 
-#     'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
-#     'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
-#     'meic_nox', 'ntl', 'ndvi', 'ndvi_std', 'sif_740', 'sif_variance',
-#     'no2_amf_trop', 'no2_trop', 'no2_variance', 'no2_trop_log'
-# ]
+
 
 def load_data_and_tools():
     with open(FEATURES_JSON, 'r') as f:

@@ -15,11 +15,11 @@ from sklearn.inspection import permutation_importance
 # ==========================================
 # 0. 全局配置与路径初始化
 # ==========================================
-LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SHP_rf_training.log'
-DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SHP_optuna_rf_study.db' 
-PARAMS_JSON = '/home/whdong/dl/best_params/train_rf_xco2en_SHP_best_params.json'
-MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-rf_model.pkl' 
-SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-rf_scaler.pkl'    
+LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SHP_rf_training(A01-No lead and lag).log'
+DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SHP_optuna_rf_study-A01.db' 
+PARAMS_JSON = '/home/whdong/dl/best_params/train_rf_xco2en_SHP_best_params-A01.json'
+MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-rf_model-A01.pkl' 
+SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-rf_scaler-A01.pkl'    
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.makedirs(os.path.dirname(DB_FILE.replace('sqlite:///', '')), exist_ok=True)
@@ -62,7 +62,6 @@ def load_and_preprocess(file_path):
     df_clean['ntl_nox_cross'] = df_clean['ntl'] * df_clean['meic_nox']
     df_clean['era5_wind_speed'] = np.sqrt(df_clean['era5_u100']**2 + df_clean['era5_v100']**2)
     df_clean['no2_trop_log'] = np.log1p(np.maximum(df_clean['no2_trop'], 0))
-    df_clean['no2_co_cross'] = df_clean['no2_trop'] / (df_clean['co'] + 1e-8)
 
     return df_clean
 
@@ -195,12 +194,12 @@ if __name__ == "__main__":
     #'era5_wind_dir_10m', 'era5_wind_dir_10m_lag1', #'era5_wind_dir_10m_lag2', 'era5_wind_dir_10m_lag3', 'era5_wind_dir_10m_lead1', #'era5_wind_dir_10m_lead2', 'era5_wind_dir_10m_lead3', 
     #'era5_wind_speed_100m','era5_wind_speed_100m_lag1', 'era5_wind_speed_100m_lag2', 'era5_wind_speed_100m_lag3', 'era5_wind_speed_100m_lead1', #'era5_wind_speed_100m_lead2', 'era5_wind_speed_100m_lead3', 
     #'era5_wind_speed_10m', # 'era5_wind_speed_10m_lag1', 'era5_wind_speed_10m_lag2', 'era5_wind_speed_10m_lag3', 'era5_wind_speed_10m_lead1', #'era5_wind_speed_10m_lead2', 'era5_wind_speed_10m_lead3', 
-    'grid_lon', 'grid_lat', 'sif_740',
-    'ndvi_t2m_cross','ssrd_t2m_cross','ntl_nox_cross','no2_co_cross',
+    'grid_lon', 'grid_lat', 
+    'ndvi_t2m_cross','ssrd_t2m_cross','ntl_nox_cross',
     'meic_nox', 'ndvi', 'ntl', 'dem_mean',
     #'no2_amf_trop', 'no2_variance', 'ndvi_std', 
     'doy_sin', 'doy_cos', 'month_sin', 'month_cos', 
-    #'co_variance',  'dem_std', 'sif_variance'
+    #'dem_std'
 ]
     
     # 强制保留名单
@@ -232,17 +231,20 @@ if __name__ == "__main__":
         json.dump(best_params, f, indent=4)
     logger.info(f"✅ RF 最优参数已安全保存至: {PARAMS_JSON}")
 
-    # 终极评估阶段：执行热启动训练监控
-    logger.info("🏁 进入终极评估阶段：执行热启动训练监控 (warm_start=True)...")
+    # ==========================================
+    # 4. 终极盲测评估阶段
+    # ==========================================
+    logger.info("🏁 阶段三：进入终极盲测评估阶段 (warm_start=True)...")
 
-    final_scaler = StandardScaler()
-    X_pool_scaled = final_scaler.fit_transform(X_pool.values)
-    X_test_scaled = final_scaler.transform(X_test.values)
+    # 严格标准化逻辑：fit 训练池，transform 测试集
+    eval_scaler = StandardScaler()
+    X_pool_scaled = eval_scaler.fit_transform(X_pool.values)
+    X_test_scaled = eval_scaler.transform(X_test.values)
     
     rf_config = best_params.copy()
     rf_config.pop('n_estimators', None)
     
-    final_model = RandomForestRegressor(
+    eval_model = RandomForestRegressor(
         **rf_config, 
         n_estimators=0,     
         warm_start=True,    
@@ -256,28 +258,30 @@ if __name__ == "__main__":
     logger.info("-" * 50)
 
     for current_trees in range(step, max_trees + 1, step):
-        final_model.n_estimators = current_trees
-        final_model.fit(X_pool_scaled, y_pool.values)
+        eval_model.n_estimators = current_trees
+        eval_model.fit(X_pool_scaled, y_pool.values)
         
-        cur_pred_train = final_model.predict(X_pool_scaled)
-        cur_pred_test  = final_model.predict(X_test_scaled)
+        cur_pred_train = eval_model.predict(X_pool_scaled)
+        cur_pred_test  = eval_model.predict(X_test_scaled)
         
         cur_train_r2 = r2_score(y_pool.values, cur_pred_train)
         cur_test_r2  = r2_score(y_test, cur_pred_test)
         logger.info(f"{current_trees:>6} | {cur_train_r2:>10.4f} | {cur_test_r2:>10.4f} | 训练中...")
 
-    # 最终指标汇总与百分比重要性提取
-    y_pred = final_model.predict(X_test_scaled)
-    y_pred_train_final = final_model.predict(X_pool_scaled)
+    # 最终指标汇总
+    y_pred = eval_model.predict(X_test_scaled)
+    y_pred_train_final = eval_model.predict(X_pool_scaled)
 
     train_r2_final = r2_score(y_pool.values, y_pred_train_final)
+    train_rmse_final = np.sqrt(mean_squared_error(y_pool.values, y_pred_train_final))
+    
     test_r2 = r2_score(y_test, y_pred)
     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     test_mae = mean_absolute_error(y_test, y_pred)
     test_bias = np.mean(y_pred - y_test)
 
     # --- 提取特征重要性 (Gini 百分比) ---
-    raw_gini = final_model.feature_importances_
+    raw_gini = eval_model.feature_importances_
     pct_gini = (raw_gini / raw_gini.sum()) * 100
     
     importance_df = pd.DataFrame({
@@ -287,6 +291,8 @@ if __name__ == "__main__":
     
     logger.info("="*30 + " RANDOM FOREST FINAL REPORT " + "="*30)
     logger.info(f"Train R²  : {train_r2_final:.4f}")
+    logger.info(f"Train RMSE: {train_rmse_final:.4f} ppm")
+    logger.info("-" * 25)
     logger.info(f"Test R²   : {test_r2:.4f}")
     logger.info(f"Test RMSE : {test_rmse:.4f} ppm")
     logger.info(f"Test MAE  : {test_mae:.4f} ppm")
@@ -298,11 +304,10 @@ if __name__ == "__main__":
         
     # --- 提取特征重要性 (Permutation 百分比) ---
     perm_result = permutation_importance(
-        final_model, X_test_scaled, y_test, 
+        eval_model, X_test_scaled, y_test, 
         n_repeats=5, random_state=42, n_jobs=-1
     )
     
-    # 防止负值导致百分比计算错误，截断到0
     raw_perm = np.maximum(perm_result.importances_mean, 0) 
     pct_perm = (raw_perm / (raw_perm.sum() + 1e-9)) * 100
     
@@ -316,12 +321,9 @@ if __name__ == "__main__":
         logger.info(f"  {row['Feature']:>22} : {row['Importance (%)']:>6.2f}%")
     
     logger.info("-" * 25 + " 开始计算 SHAP 真实归因重要性 (耗时较长请耐心等待) " + "-" * 25)
-# ==========================================
-# 5. SHAP
-# ==========================================
-    # 1. 初始化 SHAP 树解释器
-    # 注意：为了节省时间，通常在测试集 (X_test_scaled) 上计算 SHAP，而不是全量数据
-    explainer = shap.TreeExplainer(final_model)
+
+    # 1. 初始化 SHAP 树解释器 (基于评估模型)
+    explainer = shap.TreeExplainer(eval_model)
     shap_values = explainer.shap_values(X_test_scaled)
     
     # 2. 计算每个特征的平均绝对 SHAP 值 (Mean |SHAP|)
@@ -340,8 +342,23 @@ if __name__ == "__main__":
         logger.info(f"  {row['Feature']:>22} : {row['Importance (SHAP %)']:>6.2f}%")
     logger.info("="*88)
 
-    # 保存最终模型
+    # ==========================================
+    # 5. 训练并保存最终生产模型 (使用 100% 数据)
+    # ==========================================
+    logger.info("💾 阶段四：使用 100% 数据训练最终生产模型并固化...")
+    
+    # 获取特征筛选后的全量数据
+    X_full_selected = X_full[best_features]
+    
+    # 生产模型需拟合独立的全局 Scaler
+    production_scaler = StandardScaler()
+    X_full_scaled = production_scaler.fit_transform(X_full_selected.values)
+    
+    production_model = RandomForestRegressor(**best_params, n_jobs=-1, random_state=42)
+    production_model.fit(X_full_scaled, y_full.values)
+
+    # 保存生产级模型与标准化器
     os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
-    joblib.dump(final_model, MODEL_SAVE_PATH)
-    joblib.dump(final_scaler, SCALER_SAVE_PATH)
-    logger.info(f"✅ 模型与标准化器保存至: {os.path.dirname(MODEL_SAVE_PATH)}")
+    joblib.dump(production_model, MODEL_SAVE_PATH)
+    joblib.dump(production_scaler, SCALER_SAVE_PATH)
+    logger.info(f"✅ 生产级模型与全量标准化器已持久化至: {MODEL_SAVE_PATH}")

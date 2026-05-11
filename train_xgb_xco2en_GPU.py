@@ -14,12 +14,12 @@ from sklearn.model_selection import KFold, train_test_split
 # ==========================================
 # 0. 全局配置与路径初始化
 # ==========================================
-LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SHP_xgb_10fold.log'
-DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SHP_optuna_xgb_10fold.db' 
-PARAMS_JSON = '/home/whdong/dl/best_params/train_xgb_xco2en_SHP_10fold_best.json'
-MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-xgb_10fold_model.pkl' 
-SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-xgb_10fold_scaler.pkl' 
-FEATURES_JSON = '/home/whdong/dl/best_params/selected_features_10fold.json'   
+LOG_FILE = '/home/whdong/dl/logfile/XCO2en_SHP_xgb_training(A01-No lead and lag).log'
+DB_FILE = 'sqlite:////home/whdong/dl/dbfile/XCO2en_SHP_optuna_xgb_study-A01.db' 
+PARAMS_JSON = '/home/whdong/dl/best_params/train_xgb_xco2en_SHP_best-A01.json'
+MODEL_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-xgb_model-A01.pkl' 
+SCALER_SAVE_PATH = '/home/whdong/dl/models/XCO2en_SHP-xgb_scaler-A01.pkl' 
+FEATURES_JSON = '/home/whdong/dl/best_params/selected_features-A01.json'   
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.makedirs(os.path.dirname(DB_FILE.replace('sqlite:///', '')), exist_ok=True)
@@ -162,30 +162,34 @@ if __name__ == "__main__":
         'grid_lat', 'grid_lon', 'dem_mean', 
         'month_sin', 'month_cos', 'doy_sin', 'doy_cos',
         'ndvi_t2m_cross', 'ssrd_t2m_cross', 'ntl_nox_cross',
-        'meic_nox', 'ntl', 'ndvi', 'sif_740', 'no2_trop_log',
-        #'no2_trop' 
+        'meic_nox', 'ntl', 'ndvi','no2_trop_log',
     ]
     
-    # 1. 准备全局数据 (不再切分测试集/训练集)
+    # 1. 准备全局数据并严格切分
     df = load_and_preprocess(file_path)
-
-    X_all_raw = df[initial_features].values
-    y_all = df[target]
+    X_full_raw = df[initial_features].values
+    y_full = df[target]
     
-    # 2. 执行 SHAP 特征筛选 
+    # 【修复 1】：最开头就切分出 20% 的“绝对盲测集”，完全冻结，不参与特征筛选和调参
+    X_pool_raw, X_test_raw, y_pool, y_test = train_test_split(
+        X_full_raw, y_full, test_size=0.2, random_state=42
+    )
+    
+    # 2. 执行 SHAP 特征筛选 (仅使用训练池数据 X_pool)
     temp_scaler = StandardScaler()
-    X_all_scaled_for_shap = temp_scaler.fit_transform(X_all_raw)
+    X_pool_scaled_for_shap = temp_scaler.fit_transform(X_pool_raw) # 【修复 2】：Scaler仅拟合训练池
 
     selected_feature_names = perform_shap_feature_selection(
-        X_all_scaled_for_shap, y_all, initial_features, top_n=20
+        X_pool_scaled_for_shap, y_pool, initial_features, top_n=20
     )
     selected_indices = [initial_features.index(f) for f in selected_feature_names]
     
-    # 获取精简后的未缩放原始数据，进入严格流程
-    X_all_selected_raw = X_all_raw[:, selected_indices]
+    # 获取精简特征后的数据
+    X_pool_selected_raw = X_pool_raw[:, selected_indices]
+    X_test_selected_raw = X_test_raw[:, selected_indices] # 测试集也要同步抽取这些特征
 
-    # 3. 执行参数寻优 (传入未缩放的数据，函数内部有缩放)
-    best_params = optimize_xgb(X_all_selected_raw, y_all, n_trials=500)
+    # 3. 执行参数寻优 (仅使用训练池数据 X_pool)
+    best_params = optimize_xgb(X_pool_selected_raw, y_pool, n_trials=500)
     best_params['tree_method'] = 'hist'
     best_params['device'] = 'cuda'
     
@@ -194,91 +198,42 @@ if __name__ == "__main__":
     logger.info(f"✅ XGB 最优参数已保存至: {PARAMS_JSON}")
 
     # ==========================================
-    # 4. 核心修改：10-Fold 交叉验证终极评估
+    # 4. 终极盲测评估 (使用从没见过测试集评估真实性能)
     # ==========================================
-    logger.info("🏁 阶段三：执行严谨的 10-Fold 交叉验证评估...")
+    logger.info("🏁 阶段三：执行终极盲测集评估，并对比训练集性能...")
     
-    kf_10 = KFold(n_splits=10, shuffle=True, random_state=42)
-    oof_predictions = np.zeros(len(y_all)) 
-    fold_rmses = []
-    fold_r2s = []
-    
-    for fold, (train_idx, test_idx) in enumerate(kf_10.split(X_all_selected_raw)):
-        # 获取原始折数据
-        X_fold_train_raw, y_fold_train = X_all_selected_raw[train_idx], y_all.iloc[train_idx]
-        X_fold_test_raw, y_fold_test = X_all_selected_raw[test_idx], y_all.iloc[test_idx]
-        
-        # 【修复4】：使用 train_test_split 避免时序切片偏差
-        X_inner_tr_raw, X_inner_val_raw, y_inner_tr, y_inner_val = train_test_split(
-            X_fold_train_raw, y_fold_train, test_size=0.1, random_state=42
-        )
-        
-        # 【核心修复】：在当前折闭环内进行严格标准化
-        fold_scaler = StandardScaler()
-        X_inner_tr = fold_scaler.fit_transform(X_inner_tr_raw)
-        X_inner_val = fold_scaler.transform(X_inner_val_raw)
-        X_fold_test = fold_scaler.transform(X_fold_test_raw)
-        
-        fold_model = xgb.XGBRegressor(**best_params,n_jobs=-1, random_state=42)
-        
-        # 训练：监控内部验证集
-        fold_model.fit(
-            X_inner_tr, y_inner_tr,
-            eval_set=[(X_inner_val, y_inner_val)],
-            early_stopping_rounds=50,
-            verbose=False
-        )
-        
-        # 预测：对未见过的测试折进行预测 (Out-of-Fold)
-        preds = fold_model.predict(X_fold_test)
-        oof_predictions[test_idx] = preds
-        
-        cur_rmse = np.sqrt(mean_squared_error(y_fold_test, preds))
-        cur_r2 = r2_score(y_fold_test, preds)
-        fold_rmses.append(cur_rmse)
-        fold_r2s.append(cur_r2)
-        
-        logger.info(f"   Fold {fold+1:>2}/10 | Best Iter: {fold_model.best_iteration:>4} | R²: {cur_r2:.4f} | RMSE: {cur_rmse:.4f}")
+    # 严格的标准化逻辑：fit训练池，transform测试集
+    eval_scaler = StandardScaler()
+    X_pool_selected_scaled = eval_scaler.fit_transform(X_pool_selected_raw)
+    X_test_selected_scaled = eval_scaler.transform(X_test_selected_raw)
 
-    # 计算全局 OOF 指标 (这是最真实的泛化性能)
-    final_r2 = r2_score(y_all, oof_predictions)
-    final_rmse = np.sqrt(mean_squared_error(y_all, oof_predictions))
-    final_mae = mean_absolute_error(y_all, oof_predictions)
-    final_bias = np.mean(oof_predictions - y_all.values)
-
-    logger.info("="*30 + " 10-FOLD CV FINAL REPORT " + "="*30)
-    logger.info(f"Average Fold R²   : {np.mean(fold_r2s):.4f} ± {np.std(fold_r2s):.4f}")
-    logger.info(f"Global OOF R²     : {final_r2:.4f}")
-    logger.info(f"Global OOF RMSE   : {final_rmse:.4f} ppm")
-    logger.info(f"Global OOF MAE    : {final_mae:.4f} ppm")
-    logger.info(f"Global OOF BIAS   : {final_bias:.4f} ppm")
-    logger.info("="*85)
-
-    # ==========================================
-    # 5. 训练最终的生产模型 (使用全部数据)
-    # ==========================================
-    logger.info("💾 阶段四：使用 100% 数据训练最终生产模型并固化...")
-    
-    # 【修复5】：为最终模型创建并保存一个拟合了 100% 数据的 Scaler
-    final_scaler = StandardScaler()
-    X_all_selected_scaled = final_scaler.fit_transform(X_all_selected_raw)
-    
-    # 使用 train_test_split
-    X_final_tr, X_final_val, y_final_tr, y_final_val = train_test_split(
-        X_all_selected_scaled, y_all, test_size=0.05, random_state=42
-    )
-    
-    production_model = xgb.XGBRegressor(**best_params, n_jobs=-1, random_state=42)
-    production_model.fit(
-        X_final_tr, y_final_tr,
-        eval_set=[(X_final_val, y_final_val)],
-        early_stopping_rounds=50,
+    eval_model = xgb.XGBRegressor(**best_params, n_jobs=-1, random_state=42)
+    eval_model.fit(
+        X_pool_selected_scaled, y_pool,
         verbose=False
     )
     
-    # 保存模型与标准化器
-    os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
-    joblib.dump({'model': production_model, 'feature_indices': selected_indices}, MODEL_SAVE_PATH)
-    # 确保保存的是最终的 scaler 供后续预测部署使用
-    joblib.dump(final_scaler, SCALER_SAVE_PATH)
-    logger.info(f"✅ 生产级模型与特征索引已持久化至: {MODEL_SAVE_PATH}")
+    # 👇 [修改点]：同时对训练集(Pool)和测试集(Test)进行预测
+    train_preds = eval_model.predict(X_pool_selected_scaled)
+    test_preds = eval_model.predict(X_test_selected_scaled)
+
+    # 👇 [修改点]：计算训练集的指标 (与 RF 对齐)
+    train_r2 = r2_score(y_pool, train_preds)
+    train_rmse = np.sqrt(mean_squared_error(y_pool, train_preds))
+
+    # 计算测试集的指标
+    test_r2 = r2_score(y_test, test_preds)
+    test_rmse = np.sqrt(mean_squared_error(y_test, test_preds))
+    test_mae = mean_absolute_error(y_test, test_preds)
+    test_bias = np.mean(test_preds - y_test.values)
+
+    # 👇 [修改点]：输出与 RF 完全一致的评估报告格式
+    logger.info("="*30 + " XGBOOST FINAL REPORT " + "="*30)
+    logger.info(f"Train R²  : {train_r2:.4f}")
+    logger.info(f"Train RMSE: {train_rmse:.4f} ppm")
+    logger.info("-" * 25)
+    logger.info(f"Test R²   : {test_r2:.4f}")
+    logger.info(f"Test RMSE : {test_rmse:.4f} ppm")
+    logger.info(f"Test MAE  : {test_mae:.4f} ppm")
+    logger.info(f"Test BIAS : {test_bias:.4f} ppm")
+    logger.info("="*82)
