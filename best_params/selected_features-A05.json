@@ -18,5 +18,15 @@
     "dem_mean",
     "era5_d2m_lag1",
     "ndvi",
-    "era5_blh_lag1"
+    "era5_blh_lag1",
+    "era5_tcwv_lead1",
+    "era5_tcwv_lag1",
+    "ntl",
+    "era5_tcwv",
+    "era5_sp_lead1",
+    "era5_t2m_lag1",
+    "era5_d2m_lead1",
+    "era5_sp_lag1",
+    "era5_d2m",
+    "era5_u100_lead1"
 ]

@@ -1,0 +1,15 @@
+{
+  "all_qa_levels_present": true,
+  "rmse_order_expected": "RMSE_QA0 < RMSE_QA1 < RMSE_QA2",
+  "ce_criterion": "CE_QA0 <= minimum CE across QA levels + 1.00 percentage points",
+  "rmse_qa0": 0.9317552056937611,
+  "rmse_qa1": 0.8769946653592015,
+  "rmse_qa2": 1.0273477483246527,
+  "rmse_monotonic_increase": false,
+  "ce_qa0_percent": 3.058375634517766,
+  "minimum_ce_percent": 3.058375634517766,
+  "qa0_ce_is_lowest": true,
+  "qa0_ce_is_near_lowest": true,
+  "overall_internal_qa_check_passed": false,
+  "interpretation": "RMSE 未满足严格递增；应查看 diagnostic_subset_summary.csv，判断某个严重条件是否被过度降级，或某个高误差条件仍留在 QA=0/1。 QA=0 的 CE 为三个等级中最低。"
+}

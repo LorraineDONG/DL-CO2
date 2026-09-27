@@ -1,0 +1,22 @@
+[
+    "no2_trop_mean",
+    "no2_trop_log",
+    "doy_sin",
+    "month_sin",
+    "doy_cos",
+    "era5_ssrd_lead1",
+    "era5_t2m_lead1",
+    "era5_ssrd_lag1",
+    "grid_lat",
+    "grid_lon",
+    "era5_sp_lag1",
+    "dem_mean",
+    "era5_sp",
+    "era5_tcwv_lag1",
+    "era5_sp_lead1",
+    "era5_blh_lag1",
+    "era5_t2m_lag1",
+    "era5_tcwv_lead1",
+    "era5_blh_lead1",
+    "ntl"
+]

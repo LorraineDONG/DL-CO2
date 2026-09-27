@@ -1,6 +1,9 @@
 # 忽略数据文件
 *.pkl
 *.csv
+*.nc
+*.nc4
+*.png
 *.npy
 
 # 忽略 Optuna 数据库和日志

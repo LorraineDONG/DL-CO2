@@ -1,0 +1,19 @@
+{
+    "rate_drop": 0.27276780302528303,
+    "skip_drop": 0.5960142628948653,
+    "num_parallel_tree": 3,
+    "n_estimators": 800,
+    "learning_rate": 0.05709567665461616,
+    "max_depth": 11,
+    "min_child_weight": 10,
+    "colsample_bytree": 0.6129195366442263,
+    "subsample": 0.6739991021244289,
+    "gamma": 0.12296567671150911,
+    "reg_alpha": 2.282231874521999,
+    "reg_lambda": 10.528924442504886,
+    "tree_method": "hist",
+    "device": "cuda",
+    "booster": "dart",
+    "objective": "reg:pseudohubererror",
+    "monotone_constraints": "(0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)"
+}
