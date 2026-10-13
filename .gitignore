@@ -4,7 +4,9 @@
 *.nc
 *.nc4
 *.png
+*.pdf
 *.npy
+*.json
 
 # 忽略 Optuna 数据库和日志
 *.db
